@@ -16,6 +16,7 @@ type model struct {
 	store      todo.Store
 	path       string
 	view       string
+	focus      pane
 	sidebar    int
 	selected   int
 	taskIDs    []int
@@ -23,10 +24,20 @@ type model struct {
 	height     int
 	search     string
 	input      inputState
+	editing    bool
+	editTaskID int
+	editField  int
 	message    string
 	messageAt  time.Time
 	confirmDel bool
 }
+
+type pane int
+
+const (
+	paneSidebar pane = iota
+	paneTasks
+)
 
 type inputState struct {
 	active bool
@@ -65,6 +76,7 @@ func Run() error {
 		store:  store,
 		path:   path,
 		view:   "Inbox",
+		focus:  paneTasks,
 		width:  100,
 		height: 30,
 	}
@@ -100,6 +112,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.editing {
+		return m.updateEdit(msg)
+	}
 	if msg.String() != "D" {
 		m.confirmDel = false
 	}
@@ -107,18 +122,31 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c", "q":
 		return m, tea.Sequence(m.save("Saved"), tea.Quit)
 	case "up", "k":
-		m.move(-1)
+		if m.focus == paneSidebar {
+			m.moveSidebar(-1)
+		} else {
+			m.moveTask(-1)
+		}
 	case "down", "j":
-		m.move(1)
+		if m.focus == paneSidebar {
+			m.moveSidebar(1)
+		} else {
+			m.moveTask(1)
+		}
 	case "left", "h":
-		m.moveSidebar(-1)
-	case "right", "l", "tab":
-		m.moveSidebar(1)
+		m.focus = paneSidebar
+	case "right", "l":
+		m.focus = paneTasks
+	case "tab":
+		m.toggleFocus()
 	case "n":
 		m.startInput("new", "New task", "")
 	case "e", "enter":
 		if task := m.currentTask(); task != nil {
-			m.startInput("title", "Edit title", task.Title)
+			m.editing = true
+			m.editTaskID = task.ID
+			m.editField = 0
+			m.focus = paneTasks
 		}
 	case "x", " ":
 		if task := m.currentTask(); task != nil {
@@ -131,10 +159,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "p":
 		if task := m.currentTask(); task != nil {
-			task.Priority--
-			if task.Priority < 1 {
-				task.Priority = 4
-			}
+			cyclePriority(task)
 			return m, m.save("Priority updated")
 		}
 	case "P":
@@ -163,9 +188,42 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.save("Task deleted")
 		}
 	case "?":
-		m.startInput("help", "Keys: n add, e edit, x done, d due, p priority, P project, L labels, / search, D delete, q quit", "")
+		m.startInput("help", "Keys: left/right side, up/down move, n add, e edit mode, x done, / search, D delete, q quit", "")
 	}
 	m.clampSelection()
+	return m, nil
+}
+
+func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.editingTask() == nil {
+		m.editing = false
+		m.editTaskID = 0
+		return m, nil
+	}
+	switch msg.String() {
+	case "ctrl+c", "q":
+		return m, tea.Sequence(m.save("Saved"), tea.Quit)
+	case "esc", "e":
+		m.editing = false
+		m.editTaskID = 0
+	case "up", "k":
+		m.moveEditField(-1)
+	case "down", "j":
+		m.moveEditField(1)
+	case "enter":
+		return m.commitEditField()
+	case "x":
+		if task := m.editingTask(); task != nil {
+			task.ToggleComplete()
+			m.clampSelection()
+			return m, m.save("Task updated")
+		}
+	case "p":
+		if task := m.editingTask(); task != nil {
+			cyclePriority(task)
+			return m, m.save("Priority updated")
+		}
+	}
 	return m, nil
 }
 
@@ -205,12 +263,12 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 		m.selectID(id)
 		return m, m.save("Task added")
 	case "title":
-		if task := m.currentTask(); task != nil && value != "" {
+		if task := m.targetTask(); task != nil && value != "" {
 			task.Title = value
 			return m, m.save("Task updated")
 		}
 	case "due":
-		if task := m.currentTask(); task != nil {
+		if task := m.targetTask(); task != nil {
 			due, err := todo.NormalizeDue(value, time.Now())
 			if err != nil {
 				m.flash("Invalid due date")
@@ -220,7 +278,7 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 			return m, m.save("Due date updated")
 		}
 	case "project":
-		if task := m.currentTask(); task != nil {
+		if task := m.targetTask(); task != nil {
 			project := todo.CleanProject(value)
 			if project == "" {
 				project = "Inbox"
@@ -229,7 +287,7 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 			return m, m.save("Project updated")
 		}
 	case "labels":
-		if task := m.currentTask(); task != nil {
+		if task := m.targetTask(); task != nil {
 			task.Labels = todo.CleanLabels(value)
 			return m, m.save("Labels updated")
 		}
@@ -292,8 +350,10 @@ func (m model) View() string {
 		b.WriteString(m.input.title)
 		b.WriteString(": ")
 		b.WriteString(m.input.value)
+	} else if m.editing {
+		b.WriteString(m.editBar(bodyWidth))
 	} else {
-		b.WriteString(mutedStyle.Render("j/k move  tab view  n add  e edit  x done  d due  p priority  P project  L labels  / search  D delete  q quit"))
+		b.WriteString(mutedStyle.Render("left/right side  up/down move  tab side  n add  e edit mode  x done  / search  D delete  q quit"))
 		if m.search != "" {
 			b.WriteString(accentStyle.Render("  search: " + m.search))
 		}
@@ -322,7 +382,7 @@ func (m model) save(message string) tea.Cmd {
 	}
 }
 
-func (m *model) move(delta int) {
+func (m *model) moveTask(delta int) {
 	m.selected += delta
 	m.clampSelection()
 }
@@ -338,6 +398,50 @@ func (m *model) moveSidebar(delta int) {
 	}
 	m.view = views[m.sidebar]
 	m.selected = 0
+}
+
+func (m *model) toggleFocus() {
+	if m.focus == paneSidebar {
+		m.focus = paneTasks
+		return
+	}
+	m.focus = paneSidebar
+}
+
+func (m *model) moveEditField(delta int) {
+	m.editField += delta
+	if m.editField < 0 {
+		m.editField = len(editFields) - 1
+	}
+	if m.editField >= len(editFields) {
+		m.editField = 0
+	}
+}
+
+func (m model) commitEditField() (tea.Model, tea.Cmd) {
+	task := m.editingTask()
+	if task == nil {
+		m.editing = false
+		return m, nil
+	}
+	switch editFields[m.editField] {
+	case "Title":
+		m.startInput("title", "Title", task.Title)
+	case "Project":
+		m.startInput("project", "Project", task.Project)
+	case "Due":
+		m.startInput("due", "Due date (today, tomorrow, +3d, yyyy-mm-dd, clear)", task.Due)
+	case "Priority":
+		cyclePriority(task)
+		return m, m.save("Priority updated")
+	case "Labels":
+		m.startInput("labels", "Labels", strings.Join(task.Labels, ", "))
+	case "Completed":
+		task.ToggleComplete()
+		m.clampSelection()
+		return m, m.save("Task updated")
+	}
+	return m, nil
 }
 
 func (m *model) clampSelection() {
@@ -379,6 +483,24 @@ func (m *model) currentTask() *todo.Task {
 	return task
 }
 
+func (m *model) targetTask() *todo.Task {
+	if m.editing {
+		return m.editingTask()
+	}
+	return m.currentTask()
+}
+
+func (m *model) editingTask() *todo.Task {
+	if m.editTaskID == 0 {
+		return nil
+	}
+	task, ok := m.store.Task(m.editTaskID)
+	if !ok {
+		return nil
+	}
+	return task
+}
+
 func (m *model) selectID(id int) {
 	m.refreshTaskIDs()
 	for i, taskID := range m.taskIDs {
@@ -407,6 +529,9 @@ func (m model) sidebarRow(i int, view string, width int) string {
 	label := fmt.Sprintf("%s %d", view, count)
 	row := truncate(label, width)
 	if i == m.sidebar {
+		if m.focus != paneSidebar {
+			return accentStyle.Render(pad(row, width))
+		}
 		return selectedStyle.Render(pad(row, width))
 	}
 	return row
@@ -428,7 +553,7 @@ func (m model) taskRow(index int, task todo.Task, width int) string {
 		check = "x"
 	}
 	cursor := "  "
-	if index == m.selected {
+	if index == m.selected && m.focus == paneTasks {
 		cursor = "> "
 	}
 	due := dueBadge(task)
@@ -449,9 +574,40 @@ func (m model) taskRow(index int, task todo.Task, width int) string {
 	title := truncate(task.Title, textBudget)
 	row := fmt.Sprintf("%s[%s] %s %s %s %s%s", cursor, check, priority, title, due, project, labels)
 	if index == m.selected {
+		if m.focus != paneTasks || m.editing {
+			return accentStyle.Render(pad(row, width))
+		}
 		return selectedStyle.Render(pad(row, width))
 	}
 	return row
+}
+
+var editFields = []string{"Title", "Project", "Due", "Priority", "Labels", "Completed"}
+
+func (m model) editBar(width int) string {
+	task := m.editingTask()
+	if task == nil {
+		return warnStyle.Render("Task no longer exists")
+	}
+	values := []string{
+		task.Title,
+		task.Project,
+		emptyAs(task.Due, "none"),
+		fmt.Sprintf("p%d", task.Priority),
+		emptyAs(strings.Join(task.Labels, ", "), "none"),
+		fmt.Sprintf("%t", task.Completed),
+	}
+	var fields []string
+	for i, field := range editFields {
+		text := fmt.Sprintf("%s: %s", field, values[i])
+		if i == m.editField {
+			text = selectedStyle.Render(text)
+		}
+		fields = append(fields, text)
+	}
+	line := "edit mode  " + strings.Join(fields, "  ")
+	help := mutedStyle.Render("  up/down field  enter change  p priority  x complete  esc/e close")
+	return truncate(line+help, width)
 }
 
 func dueBadge(task todo.Task) string {
@@ -488,6 +644,20 @@ func priorityBadge(priority int) string {
 	default:
 		return mutedStyle.Render("p4")
 	}
+}
+
+func cyclePriority(task *todo.Task) {
+	task.Priority--
+	if task.Priority < 1 {
+		task.Priority = 4
+	}
+}
+
+func emptyAs(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func pad(s string, width int) string {

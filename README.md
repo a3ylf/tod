@@ -29,20 +29,23 @@ If `XDG_DATA_HOME` is not set, the app uses:
 ## Keys
 
 ```text
-j/k or arrows  move through tasks
-tab or l       next view
-h             previous view
-n             add task
-e or enter     edit title
+left/right     switch between sidebar and tasks
+up/down        move within the focused side
+tab            switch focused side
+n              add task
+e or enter     open edit mode for the selected task
 x or space     toggle complete
-d             set due date
-p             cycle priority p4 -> p3 -> p2 -> p1
-P             move to project
-L             edit labels
-/             search
-c             clear search
-D             delete, press twice
-q             save and quit
+d              set due date
+p              cycle priority p4 -> p3 -> p2 -> p1
+P              move to project
+L              edit labels
+/              search
+c              clear search
+D              delete, press twice
+q              save and quit
 ```
 
 Due dates accept `today`, `tomorrow`, `+3d`, `yyyy-mm-dd`, or `clear`.
+
+In edit mode, use up/down to pick a field, enter to change it, `p` to cycle
+priority, `x` to toggle completion, and esc or `e` to close the editor.
