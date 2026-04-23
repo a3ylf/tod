@@ -47,5 +47,5 @@ q              save and quit
 
 Due dates accept `today`, `tomorrow`, `+3d`, `yyyy-mm-dd`, or `clear`.
 
-In edit mode, use up/down to pick a field, enter to change it, `p` to cycle
+In edit mode, use left/right to pick a field, enter to change it, `p` to cycle
 priority, `x` to toggle completion, and esc or `e` to close the editor.

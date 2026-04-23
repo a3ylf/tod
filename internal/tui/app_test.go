@@ -82,10 +82,15 @@ func TestEditModeTargetsSelectedTask(t *testing.T) {
 	if !m.editing || m.editTaskID != 1 {
 		t.Fatalf("edit state = (%t, %d), want (true, 1)", m.editing, m.editTaskID)
 	}
-	updated, _ = m.updateEdit(key("down"))
+	updated, _ = m.updateEdit(key("right"))
 	m = updated.(model)
 	if m.editField != 1 {
 		t.Fatalf("edit field = %d, want 1", m.editField)
+	}
+	updated, _ = m.updateEdit(key("left"))
+	m = updated.(model)
+	if m.editField != 0 {
+		t.Fatalf("edit field after left = %d, want 0", m.editField)
 	}
 }
 

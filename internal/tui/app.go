@@ -52,12 +52,16 @@ type savedMsg struct {
 }
 
 var (
-	titleStyle    = lipgloss.NewStyle().Bold(true)
-	mutedStyle    = lipgloss.NewStyle().Faint(true)
-	accentStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
-	warnStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	selectedStyle = lipgloss.NewStyle().Reverse(true)
-	borderStyle   = lipgloss.NewStyle().Faint(true)
+	titleStyle            = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9"))
+	sectionStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
+	mutedStyle            = lipgloss.NewStyle().Faint(true)
+	accentStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	warnStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+	selectedStyle         = lipgloss.NewStyle().Background(lipgloss.Color("9")).Foreground(lipgloss.Color("15")).Bold(true)
+	inactiveSelectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
+	borderStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	chipStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8")).Padding(0, 1)
+	activeChipStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("9")).Bold(true).Padding(0, 1)
 )
 
 func Run() error {
@@ -206,9 +210,9 @@ func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "e":
 		m.editing = false
 		m.editTaskID = 0
-	case "up", "k":
+	case "left", "h":
 		m.moveEditField(-1)
-	case "down", "j":
+	case "right", "l", "tab":
 		m.moveEditField(1)
 	case "enter":
 		return m.commitEditField()
@@ -323,14 +327,18 @@ func (m model) View() string {
 
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("todos"))
-	b.WriteString(mutedStyle.Render(fmt.Sprintf("  %s  data: %s", m.view, m.path)))
+	b.WriteString(mutedStyle.Render("  " + m.view + "  "))
+	b.WriteString(m.focusLabel())
+	b.WriteString(mutedStyle.Render("  data: " + m.path))
 	b.WriteByte('\n')
 
 	taskStart := scrollStart(m.selected, max(1, contentRows-1), len(tasks))
 	for i := 0; i < contentRows; i++ {
 		left := ""
-		if i < len(views) {
-			left = m.sidebarRow(i, views[i], sideWidth)
+		if i == 0 {
+			left = m.sidebarHeader(sideWidth)
+		} else if viewIndex := i - 1; viewIndex < len(views) {
+			left = m.sidebarRow(viewIndex, views[viewIndex], sideWidth)
 		}
 		right := ""
 		if i == 0 {
@@ -353,7 +361,7 @@ func (m model) View() string {
 	} else if m.editing {
 		b.WriteString(m.editBar(bodyWidth))
 	} else {
-		b.WriteString(mutedStyle.Render("left/right side  up/down move  tab side  n add  e edit mode  x done  / search  D delete  q quit"))
+		b.WriteString(mutedStyle.Render("left/right side  up/down move  tab side  n add  e edit  x done  / search  D delete  q quit"))
 		if m.search != "" {
 			b.WriteString(accentStyle.Render("  search: " + m.search))
 		}
@@ -372,6 +380,16 @@ func (m *model) startInput(kind, title, value string) {
 func (m *model) flash(message string) {
 	m.message = message
 	m.messageAt = time.Now()
+}
+
+func (m model) focusLabel() string {
+	if m.editing {
+		return activeChipStyle.Render("editing")
+	}
+	if m.focus == paneSidebar {
+		return activeChipStyle.Render("views")
+	}
+	return activeChipStyle.Render("tasks")
 }
 
 func (m model) save(message string) tea.Cmd {
@@ -524,13 +542,21 @@ func (m model) views() []string {
 	return views
 }
 
+func (m model) sidebarHeader(width int) string {
+	label := "Views"
+	if m.focus == paneSidebar {
+		return sectionStyle.Render(pad(label, width))
+	}
+	return mutedStyle.Render(pad(label, width))
+}
+
 func (m model) sidebarRow(i int, view string, width int) string {
 	count := len(todo.Filter(m.store.Tasks, view, "", time.Now()))
 	label := fmt.Sprintf("%s %d", view, count)
 	row := truncate(label, width)
 	if i == m.sidebar {
 		if m.focus != paneSidebar {
-			return accentStyle.Render(pad(row, width))
+			return inactiveSelectedStyle.Render(pad(row, width))
 		}
 		return selectedStyle.Render(pad(row, width))
 	}
@@ -544,7 +570,13 @@ func (m model) headerRow(tasks []todo.Task) string {
 			open++
 		}
 	}
-	return fmt.Sprintf("%s %s", titleStyle.Render(fmt.Sprintf("%d tasks", len(tasks))), mutedStyle.Render(fmt.Sprintf("(%d open total)", open)))
+	title := fmt.Sprintf("%d tasks", len(tasks))
+	if m.focus == paneTasks {
+		title = sectionStyle.Render(title)
+	} else {
+		title = mutedStyle.Render(title)
+	}
+	return fmt.Sprintf("%s %s", title, mutedStyle.Render(fmt.Sprintf("(%d open total)", open)))
 }
 
 func (m model) taskRow(index int, task todo.Task, width int) string {
@@ -556,16 +588,15 @@ func (m model) taskRow(index int, task todo.Task, width int) string {
 	if index == m.selected && m.focus == paneTasks {
 		cursor = "> "
 	}
-	due := dueBadge(task)
-	priority := priorityBadge(task.Priority)
+	priority := priorityBadge(task.Priority, false)
+	due := dueBadge(task, false)
 	project := mutedStyle.Render("#" + task.Project)
-	labels := ""
-	if len(task.Labels) > 0 {
-		parts := make([]string, len(task.Labels))
-		for i, label := range task.Labels {
-			parts[i] = "@" + label
-		}
-		labels = mutedStyle.Render(" " + strings.Join(parts, " "))
+	labels := labelsBadge(task.Labels, false)
+	if index == m.selected {
+		priority = priorityBadge(task.Priority, true)
+		due = dueBadge(task, true)
+		project = "#" + task.Project
+		labels = labelsBadge(task.Labels, true)
 	}
 	textBudget := width - ansi.StringWidth(cursor) - 4 - ansi.StringWidth(priority) - ansi.StringWidth(due) - ansi.StringWidth(project) - ansi.StringWidth(labels)
 	if textBudget < 10 {
@@ -575,7 +606,7 @@ func (m model) taskRow(index int, task todo.Task, width int) string {
 	row := fmt.Sprintf("%s[%s] %s %s %s %s%s", cursor, check, priority, title, due, project, labels)
 	if index == m.selected {
 		if m.focus != paneTasks || m.editing {
-			return accentStyle.Render(pad(row, width))
+			return inactiveSelectedStyle.Render(pad(row, width))
 		}
 		return selectedStyle.Render(pad(row, width))
 	}
@@ -601,17 +632,22 @@ func (m model) editBar(width int) string {
 	for i, field := range editFields {
 		text := fmt.Sprintf("%s: %s", field, values[i])
 		if i == m.editField {
-			text = selectedStyle.Render(text)
+			text = activeChipStyle.Render(text)
+		} else {
+			text = chipStyle.Render(text)
 		}
 		fields = append(fields, text)
 	}
 	line := "edit mode  " + strings.Join(fields, "  ")
-	help := mutedStyle.Render("  up/down field  enter change  p priority  x complete  esc/e close")
+	help := mutedStyle.Render("  left/right field  enter change  p priority  x complete  esc/e close")
 	return truncate(line+help, width)
 }
 
-func dueBadge(task todo.Task) string {
+func dueBadge(task todo.Task, plain bool) string {
 	if task.Due == "" {
+		if plain {
+			return "no due"
+		}
 		return mutedStyle.Render("no due")
 	}
 	d, ok := task.DueTime()
@@ -623,8 +659,14 @@ func dueBadge(task todo.Task) string {
 	start := time.Date(y, month, day, 0, 0, 0, 0, today.Location())
 	switch {
 	case d.Before(start):
+		if plain {
+			return task.Due
+		}
 		return warnStyle.Render(task.Due)
 	case d.Equal(start):
+		if plain {
+			return "today"
+		}
 		return accentStyle.Render("today")
 	case d.Equal(start.AddDate(0, 0, 1)):
 		return "tomorrow"
@@ -633,17 +675,36 @@ func dueBadge(task todo.Task) string {
 	}
 }
 
-func priorityBadge(priority int) string {
+func priorityBadge(priority int, plain bool) string {
+	label := fmt.Sprintf("p%d", priority)
+	if plain {
+		return label
+	}
 	switch priority {
 	case 1:
-		return warnStyle.Render("p1")
+		return warnStyle.Render(label)
 	case 2:
-		return accentStyle.Render("p2")
+		return accentStyle.Render(label)
 	case 3:
-		return "p3"
+		return label
 	default:
-		return mutedStyle.Render("p4")
+		return mutedStyle.Render(label)
 	}
+}
+
+func labelsBadge(labels []string, plain bool) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	parts := make([]string, len(labels))
+	for i, label := range labels {
+		parts[i] = "@" + label
+	}
+	value := " " + strings.Join(parts, " ")
+	if plain {
+		return value
+	}
+	return mutedStyle.Render(value)
 }
 
 func cyclePriority(task *todo.Task) {
