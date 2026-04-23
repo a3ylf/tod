@@ -94,6 +94,44 @@ func TestEditModeTargetsSelectedTask(t *testing.T) {
 	}
 }
 
+func TestWExportsSelectedTask(t *testing.T) {
+	m := model{
+		store: todo.Store{
+			NextID: 2,
+			Tasks:  []todo.Task{{ID: 7, Title: "write prompt", Project: "Inbox", Priority: 4}},
+		},
+		view:  "Inbox",
+		focus: paneTasks,
+	}
+	updated, _ := m.updateNormal(key("w"))
+	m = updated.(model)
+	if m.exportID != 7 {
+		t.Fatalf("exportID = %d, want 7", m.exportID)
+	}
+	if m.exportPlan {
+		t.Fatal("exportPlan = true, want false")
+	}
+}
+
+func TestShiftWExportsSelectedTaskForPlan(t *testing.T) {
+	m := model{
+		store: todo.Store{
+			NextID: 2,
+			Tasks:  []todo.Task{{ID: 7, Title: "write prompt", Project: "Inbox", Priority: 4}},
+		},
+		view:  "Inbox",
+		focus: paneTasks,
+	}
+	updated, _ := m.updateNormal(key("W"))
+	m = updated.(model)
+	if m.exportID != 7 {
+		t.Fatalf("exportID = %d, want 7", m.exportID)
+	}
+	if !m.exportPlan {
+		t.Fatal("exportPlan = false, want true")
+	}
+}
+
 func key(s string) tea.KeyMsg {
 	switch s {
 	case "up":

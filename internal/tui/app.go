@@ -30,6 +30,14 @@ type model struct {
 	message    string
 	messageAt  time.Time
 	confirmDel bool
+	exportID   int
+	exportPlan bool
+}
+
+type ExportedTask struct {
+	ID      int
+	Title   string
+	RunPlan bool
 }
 
 type pane int
@@ -66,14 +74,14 @@ var (
 	activeChipStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("9")).Bold(true).Padding(0, 1)
 )
 
-func Run() error {
+func Run() (*ExportedTask, error) {
 	path, err := todo.DefaultPath()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	store, err := todo.Load(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(store.Tasks) == 0 {
 		store.Add("Press n to add your first task", "Inbox")
@@ -86,8 +94,19 @@ func Run() error {
 		width:  100,
 		height: 30,
 	}
-	_, err = tea.NewProgram(m, tea.WithAltScreen()).Run()
-	return err
+	final, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	if err != nil {
+		return nil, err
+	}
+	finished, ok := final.(model)
+	if !ok || finished.exportID == 0 {
+		return nil, nil
+	}
+	task, ok := finished.store.Task(finished.exportID)
+	if !ok {
+		return nil, nil
+	}
+	return &ExportedTask{ID: task.ID, Title: task.Title, RunPlan: finished.exportPlan}, nil
 }
 
 func (m model) Init() tea.Cmd {
@@ -127,6 +146,17 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "q":
 		return m, tea.Sequence(m.save("Saved"), tea.Quit)
+	case "w":
+		if task := m.currentTask(); task != nil {
+			m.exportID = task.ID
+			return m, tea.Sequence(m.save("Saved"), tea.Quit)
+		}
+	case "W":
+		if task := m.currentTask(); task != nil {
+			m.exportID = task.ID
+			m.exportPlan = true
+			return m, tea.Sequence(m.save("Saved"), tea.Quit)
+		}
 	case "up", "k":
 		if m.focus == paneSidebar {
 			m.moveSidebar(-1)
@@ -194,7 +224,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.save("Task deleted")
 		}
 	case "?":
-		m.startInput("help", "Keys: left/right side, up/down move, n add, e edit mode, x done, / search, D delete, q quit", "")
+		m.startInput("help", "Keys: left/right side, up/down move, n add, e edit, w export, W plan, x done, / search, D delete, q quit", "")
 	}
 	m.clampSelection()
 	return m, nil
@@ -270,7 +300,9 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 		return m, m.save("Task added")
 	case "title":
 		if task := m.targetTask(); task != nil && value != "" {
-			task.Title = value
+			if !todo.ApplyTaskText(task, value, time.Now()) {
+				return m, nil
+			}
 			return m, m.save("Task updated")
 		}
 	case "due":
@@ -363,7 +395,7 @@ func (m model) View() string {
 	} else if m.editing {
 		b.WriteString(m.editBar(bodyWidth))
 	} else {
-		b.WriteString(mutedStyle.Render("left/right side  up/down move  tab side  n add  e edit  x done  / search  D delete  q quit"))
+		b.WriteString(mutedStyle.Render("left/right side  up/down move  tab side  n add  e edit  w export  W plan  x done  / search  D delete  q quit"))
 		if m.search != "" {
 			b.WriteString(accentStyle.Render("  search: " + m.search))
 		}

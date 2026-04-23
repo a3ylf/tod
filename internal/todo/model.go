@@ -23,27 +23,49 @@ type Store struct {
 	Tasks  []Task `json:"tasks"`
 }
 
+type ParsedText struct {
+	Title       string
+	Project     string
+	Due         string
+	Priority    int
+	Labels      []string
+	HasProject  bool
+	HasDue      bool
+	HasPriority bool
+	HasLabels   bool
+}
+
 func NewStore() Store {
 	return Store{NextID: 1}
 }
 
 func (s *Store) Add(title, project string) int {
-	title = strings.TrimSpace(title)
-	if title == "" {
+	now := time.Now()
+	parsed := ParseTaskText(title, now)
+	if parsed.Title == "" {
 		return 0
 	}
 	project = CleanProject(project)
 	if project == "" {
 		project = "Inbox"
 	}
+	if parsed.HasProject {
+		project = parsed.Project
+	}
+	priority := 4
+	if parsed.HasPriority {
+		priority = parsed.Priority
+	}
 	id := s.NextID
 	s.NextID++
 	s.Tasks = append(s.Tasks, Task{
 		ID:        id,
-		Title:     title,
+		Title:     parsed.Title,
 		Project:   project,
-		Priority:  4,
-		CreatedAt: time.Now(),
+		Due:       parsed.Due,
+		Priority:  priority,
+		Labels:    parsed.Labels,
+		CreatedAt: now,
 	})
 	return id
 }
@@ -124,6 +146,57 @@ func NormalizeDue(input string, now time.Time) (string, error) {
 	return d.Format("2006-01-02"), nil
 }
 
+func ParseTaskText(input string, now time.Time) ParsedText {
+	fields := strings.Fields(strings.TrimSpace(input))
+	parsed := ParsedText{}
+	var title []string
+	for _, field := range fields {
+		switch {
+		case isPriority(field):
+			parsed.Priority = int(field[1] - '0')
+			parsed.HasPriority = true
+		case strings.HasPrefix(field, "#") && CleanProject(field) != "":
+			parsed.Project = CleanProject(field)
+			parsed.HasProject = true
+		case strings.HasPrefix(field, "@") && strings.Trim(strings.TrimSpace(field), "@") != "":
+			parsed.Labels = append(parsed.Labels, strings.Trim(strings.TrimSpace(field), "@"))
+			parsed.HasLabels = true
+		case isDueToken(field, now):
+			due, _ := NormalizeDue(field, now)
+			parsed.Due = due
+			parsed.HasDue = true
+		default:
+			title = append(title, field)
+		}
+	}
+	parsed.Title = strings.Join(title, " ")
+	if parsed.HasLabels {
+		parsed.Labels = cleanLabelList(parsed.Labels)
+	}
+	return parsed
+}
+
+func ApplyTaskText(task *Task, input string, now time.Time) bool {
+	parsed := ParseTaskText(input, now)
+	if parsed.Title == "" {
+		return false
+	}
+	task.Title = parsed.Title
+	if parsed.HasProject {
+		task.Project = parsed.Project
+	}
+	if parsed.HasDue {
+		task.Due = parsed.Due
+	}
+	if parsed.HasPriority {
+		task.Priority = parsed.Priority
+	}
+	if parsed.HasLabels {
+		task.Labels = parsed.Labels
+	}
+	return true
+}
+
 func CleanProject(project string) string {
 	project = strings.TrimSpace(project)
 	project = strings.TrimPrefix(project, "#")
@@ -131,12 +204,21 @@ func CleanProject(project string) string {
 }
 
 func CleanLabels(input string) []string {
-	seen := map[string]bool{}
 	var labels []string
 	for _, field := range strings.FieldsFunc(input, func(r rune) bool {
 		return r == ',' || r == ' '
 	}) {
 		label := strings.Trim(strings.TrimSpace(field), "@")
+		labels = append(labels, label)
+	}
+	return cleanLabelList(labels)
+}
+
+func cleanLabelList(input []string) []string {
+	seen := map[string]bool{}
+	var labels []string
+	for _, label := range input {
+		label = strings.Trim(strings.TrimSpace(label), "@")
 		if label == "" || seen[label] {
 			continue
 		}
@@ -273,4 +355,22 @@ func parsePositiveInt(input string) (int, bool) {
 		n = n*10 + int(r-'0')
 	}
 	return n, true
+}
+
+func isPriority(input string) bool {
+	input = strings.ToLower(strings.TrimSpace(input))
+	return len(input) == 2 && input[0] == 'p' && input[1] >= '1' && input[1] <= '4'
+}
+
+func isDueToken(input string, now time.Time) bool {
+	input = strings.ToLower(strings.TrimSpace(input))
+	if input == "today" || input == "tomorrow" || input == "tmr" {
+		return true
+	}
+	if strings.HasPrefix(input, "+") && strings.HasSuffix(input, "d") {
+		_, ok := parsePositiveInt(strings.TrimSuffix(strings.TrimPrefix(input, "+"), "d"))
+		return ok
+	}
+	_, err := time.ParseInLocation("2006-01-02", input, now.Location())
+	return err == nil
 }
