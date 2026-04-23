@@ -59,6 +59,8 @@ var (
 	warnStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
 	selectedStyle         = lipgloss.NewStyle().Background(lipgloss.Color("9")).Foreground(lipgloss.Color("15")).Bold(true)
 	inactiveSelectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
+	selectedBorderStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+	inactiveBorderStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	borderStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	chipStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8")).Padding(0, 1)
 	activeChipStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("9")).Bold(true).Padding(0, 1)
@@ -332,7 +334,7 @@ func (m model) View() string {
 	b.WriteString(mutedStyle.Render("  data: " + m.path))
 	b.WriteByte('\n')
 
-	taskStart := scrollStart(m.selected, max(1, contentRows-1), len(tasks))
+	taskLines := m.taskListLines(tasks, bodyWidth, max(1, contentRows-1))
 	for i := 0; i < contentRows; i++ {
 		left := ""
 		if i == 0 {
@@ -343,8 +345,8 @@ func (m model) View() string {
 		right := ""
 		if i == 0 {
 			right = m.headerRow(tasks)
-		} else if taskIndex := taskStart + i - 1; taskIndex < len(tasks) {
-			right = m.taskRow(taskIndex, tasks[taskIndex], bodyWidth)
+		} else if lineIndex := i - 1; lineIndex < len(taskLines) {
+			right = taskLines[lineIndex]
 		}
 		b.WriteString(pad(left, sideWidth))
 		b.WriteString(borderStyle.Render(" | "))
@@ -579,6 +581,42 @@ func (m model) headerRow(tasks []todo.Task) string {
 	return fmt.Sprintf("%s %s", title, mutedStyle.Render(fmt.Sprintf("(%d open total)", open)))
 }
 
+func (m model) taskListLines(tasks []todo.Task, width int, visible int) []string {
+	if visible <= 0 {
+		return nil
+	}
+	taskStart := scrollStart(m.selected, max(1, visible-2), len(tasks))
+	lines := make([]string, 0, visible)
+	for i := taskStart; i < len(tasks) && len(lines) < visible; i++ {
+		if i == m.selected {
+			box := m.selectedTaskBox(i, tasks[i], width)
+			for _, line := range box {
+				if len(lines) < visible {
+					lines = append(lines, line)
+				}
+			}
+			continue
+		}
+		lines = append(lines, m.taskRow(i, tasks[i], width))
+	}
+	return lines
+}
+
+func (m model) selectedTaskBox(index int, task todo.Task, width int) []string {
+	if width < 8 {
+		return []string{m.taskRow(index, task, width)}
+	}
+	style := selectedBorderStyle
+	if m.focus != paneTasks || m.editing {
+		style = inactiveBorderStyle
+	}
+	top := style.Render("+" + strings.Repeat("-", width-2) + "+")
+	content := m.taskRow(index, task, width-4)
+	middle := style.Render("| ") + pad(content, width-4) + style.Render(" |")
+	bottom := style.Render("+" + strings.Repeat("-", width-2) + "+")
+	return []string{top, middle, bottom}
+}
+
 func (m model) taskRow(index int, task todo.Task, width int) string {
 	check := " "
 	if task.Completed {
@@ -593,10 +631,7 @@ func (m model) taskRow(index int, task todo.Task, width int) string {
 	project := mutedStyle.Render("#" + task.Project)
 	labels := labelsBadge(task.Labels, false)
 	if index == m.selected {
-		priority = priorityBadge(task.Priority, true)
-		due = dueBadge(task, true)
-		project = "#" + task.Project
-		labels = labelsBadge(task.Labels, true)
+		project = accentStyle.Render("#" + task.Project)
 	}
 	textBudget := width - ansi.StringWidth(cursor) - 4 - ansi.StringWidth(priority) - ansi.StringWidth(due) - ansi.StringWidth(project) - ansi.StringWidth(labels)
 	if textBudget < 10 {
@@ -604,12 +639,6 @@ func (m model) taskRow(index int, task todo.Task, width int) string {
 	}
 	title := truncate(task.Title, textBudget)
 	row := fmt.Sprintf("%s[%s] %s %s %s %s%s", cursor, check, priority, title, due, project, labels)
-	if index == m.selected {
-		if m.focus != paneTasks || m.editing {
-			return inactiveSelectedStyle.Render(pad(row, width))
-		}
-		return selectedStyle.Render(pad(row, width))
-	}
 	return row
 }
 
@@ -684,9 +713,9 @@ func priorityBadge(priority int, plain bool) string {
 	case 1:
 		return warnStyle.Render(label)
 	case 2:
-		return accentStyle.Render(label)
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true).Render(label)
 	case 3:
-		return label
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true).Render(label)
 	default:
 		return mutedStyle.Render(label)
 	}
