@@ -11,7 +11,13 @@ go run ./cmd/todos
 Build a local binary:
 
 ```sh
-go build -o todo ./cmd/todos
+go build -o tod ./cmd/tod
+```
+
+Install the global `tod` command:
+
+```sh
+go install ./cmd/tod
 ```
 
 Tasks are stored as JSON at:
@@ -75,7 +81,7 @@ task directly.
 Generate a Codex kickoff prompt for a task:
 
 ```sh
-todo --plan 12
+tod --plan 12
 ```
 
 The planner loads the task from local storage and runs `codex exec -s read-only`
