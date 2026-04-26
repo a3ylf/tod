@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -74,25 +75,51 @@ func TestEditModeTargetsSelectedTask(t *testing.T) {
 	m := model{
 		store: todo.Store{
 			NextID: 2,
-			Tasks:  []todo.Task{{ID: 1, Title: "one", Project: "Inbox", Priority: 4}},
+			Tasks:  []todo.Task{{ID: 1, Title: "one", Project: "Work", Due: "2026-04-25", Priority: 3, Labels: []string{"focus"}}},
 		},
-		view:  "Inbox",
+		view:  "All",
 		focus: paneTasks,
 	}
 	updated, _ := m.updateNormal(key("e"))
 	m = updated.(model)
-	if !m.editing || m.editTaskID != 1 {
-		t.Fatalf("edit state = (%t, %d), want (true, 1)", m.editing, m.editTaskID)
+	if !m.editing || m.editTaskID != 1 || !m.input.active || m.input.kind != "edit" {
+		t.Fatalf("edit state = (%t, %d, %t, %q), want active text edit", m.editing, m.editTaskID, m.input.active, m.input.kind)
 	}
-	updated, _ = m.updateEdit(key("right"))
-	m = updated.(model)
-	if m.editField != 1 {
-		t.Fatalf("edit field = %d, want 1", m.editField)
+	if m.input.value != "one p3 2026-04-25 #Work @focus" {
+		t.Fatalf("edit value = %q, want full task text", m.input.value)
 	}
-	updated, _ = m.updateEdit(key("left"))
+}
+
+func TestTextEditReplacesTaskFields(t *testing.T) {
+	m := model{
+		store: todo.Store{
+			NextID: 2,
+			Tasks:  []todo.Task{{ID: 1, Title: "one", Project: "Work", Due: "2026-04-25", Priority: 3, Labels: []string{"focus"}}},
+		},
+		view:       "All",
+		focus:      paneTasks,
+		editing:    true,
+		editTaskID: 1,
+		input:      inputState{active: true, kind: "edit", title: "Edit", value: "two p1 tomorrow #Home @deep"},
+	}
+	updated, _ := m.updateInput(key("enter"))
 	m = updated.(model)
-	if m.editField != 0 {
-		t.Fatalf("edit field after left = %d, want 0", m.editField)
+	task, _ := m.store.Task(1)
+	if m.editing || m.input.active {
+		t.Fatalf("edit still active after commit")
+	}
+	if task.Title != "two" || task.Project != "Home" || task.Priority != 1 || task.Due == "" || !reflect.DeepEqual(task.Labels, []string{"deep"}) {
+		t.Fatalf("task = %+v, want text edit applied", task)
+	}
+
+	m.editing = true
+	m.editTaskID = 1
+	m.input = inputState{active: true, kind: "edit", title: "Edit", value: "plain"}
+	updated, _ = m.updateInput(key("enter"))
+	m = updated.(model)
+	task, _ = m.store.Task(1)
+	if task.Title != "plain" || task.Project != "Inbox" || task.Priority != 4 || task.Due != "" || len(task.Labels) != 0 {
+		t.Fatalf("task = %+v, want removed inline metadata cleared", task)
 	}
 }
 
@@ -219,6 +246,22 @@ func TestSelectedTaskBoxWrapsLongTitle(t *testing.T) {
 	for _, line := range lines {
 		if got := ansi.StringWidth(line); got > 42 {
 			t.Fatalf("line width = %d, want <= 42: %q", got, line)
+		}
+	}
+}
+
+func TestInputViewWrapsLongEditText(t *testing.T) {
+	m := model{
+		input: inputState{
+			active: true,
+			kind:   "edit",
+			title:  "Edit",
+			value:  "make it nvim like so slash project and labels can be edited in one place p3 2026-04-25 #Work @focus",
+		},
+	}
+	for _, line := range strings.Split(m.inputView(44), "\n") {
+		if got := ansi.StringWidth(line); got > 44 {
+			t.Fatalf("line width = %d, want <= 44: %q", got, line)
 		}
 	}
 }

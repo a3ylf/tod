@@ -183,6 +183,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.editTaskID = task.ID
 			m.editField = 0
 			m.focus = paneTasks
+			m.startInput("edit", "Edit", taskEditText(*task))
 		}
 	case "x", " ":
 		if task := m.currentTask(); task != nil {
@@ -267,6 +268,10 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.input = inputState{}
+		if m.editing {
+			m.editing = false
+			m.editTaskID = 0
+		}
 	case "enter":
 		return m.commitInput()
 	case "backspace":
@@ -312,6 +317,16 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 			if !todo.ApplyTaskText(task, value, time.Now()) {
 				return m, nil
 			}
+			return m, m.save("Task updated")
+		}
+	case "edit":
+		if task := m.editingTask(); task != nil && value != "" {
+			if !todo.ReplaceTaskText(task, value, time.Now()) {
+				return m, nil
+			}
+			m.editing = false
+			m.editTaskID = 0
+			m.clampSelection()
 			return m, m.save("Task updated")
 		}
 	case "due":
@@ -398,9 +413,7 @@ func (m model) View() string {
 	b.WriteString(borderStyle.Render(strings.Repeat("-", max(1, m.width))))
 	b.WriteByte('\n')
 	if m.input.active {
-		b.WriteString(m.input.title)
-		b.WriteString(": ")
-		b.WriteString(m.input.value)
+		b.WriteString(m.inputView(m.width))
 	} else if m.editing {
 		b.WriteString(m.editBar(bodyWidth))
 	} else {
@@ -412,6 +425,28 @@ func (m model) View() string {
 	if m.message != "" && time.Since(m.messageAt) < 4*time.Second {
 		b.WriteByte('\n')
 		b.WriteString(accentStyle.Render(m.message))
+	}
+	return b.String()
+}
+
+func (m model) inputView(width int) string {
+	prefix := m.input.title + ": "
+	available := width - ansi.StringWidth(prefix)
+	if available < 10 {
+		available = 10
+	}
+	lines := wrapTextPreserveWords(m.input.value, available)
+	if len(lines) == 0 {
+		return prefix
+	}
+	var b strings.Builder
+	b.WriteString(prefix)
+	b.WriteString(lines[0])
+	indent := strings.Repeat(" ", ansi.StringWidth(prefix))
+	for _, line := range lines[1:] {
+		b.WriteByte('\n')
+		b.WriteString(indent)
+		b.WriteString(line)
 	}
 	return b.String()
 }
@@ -726,6 +761,23 @@ func (m model) taskRow(index int, task todo.Task, width int) string {
 
 var editFields = []string{"Title", "Project", "Due", "Priority", "Labels", "Completed"}
 
+func taskEditText(task todo.Task) string {
+	parts := []string{task.Title}
+	if task.Priority != 4 {
+		parts = append(parts, fmt.Sprintf("p%d", task.Priority))
+	}
+	if task.Due != "" {
+		parts = append(parts, task.Due)
+	}
+	if task.Project != "" && task.Project != "Inbox" {
+		parts = append(parts, "#"+task.Project)
+	}
+	for _, label := range task.Labels {
+		parts = append(parts, "@"+label)
+	}
+	return strings.Join(parts, " ")
+}
+
 func (m model) editBar(width int) string {
 	task := m.editingTask()
 	if task == nil {
@@ -869,6 +921,13 @@ func wrapText(s string, width int) []string {
 		line = word
 	}
 	return appendPendingLine(lines, line)
+}
+
+func wrapTextPreserveWords(s string, width int) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return wrapText(s, width)
 }
 
 func appendPendingLine(lines []string, line string) []string {

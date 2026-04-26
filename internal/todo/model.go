@@ -197,6 +197,28 @@ func ApplyTaskText(task *Task, input string, now time.Time) bool {
 	return true
 }
 
+func ReplaceTaskText(task *Task, input string, now time.Time) bool {
+	parsed := ParseTaskText(input, now)
+	if parsed.Title == "" {
+		return false
+	}
+	task.Title = parsed.Title
+	task.Project = "Inbox"
+	if parsed.HasProject {
+		task.Project = parsed.Project
+	}
+	task.Due = parsed.Due
+	task.Priority = 4
+	if parsed.HasPriority {
+		task.Priority = parsed.Priority
+	}
+	task.Labels = nil
+	if parsed.HasLabels {
+		task.Labels = parsed.Labels
+	}
+	return true
+}
+
 func CleanProject(project string) string {
 	project = strings.TrimSpace(project)
 	project = strings.TrimPrefix(project, "#")

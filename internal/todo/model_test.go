@@ -106,6 +106,17 @@ func TestApplyTaskTextPreservesUnspecifiedComponents(t *testing.T) {
 	}
 }
 
+func TestReplaceTaskTextClearsRemovedComponents(t *testing.T) {
+	now := time.Date(2026, 4, 23, 12, 0, 0, 0, time.UTC)
+	task := Task{Title: "old", Project: "Work", Due: "2026-04-23", Priority: 1, Labels: []string{"old"}}
+	if !ReplaceTaskText(&task, "new title", now) {
+		t.Fatal("ReplaceTaskText returned false")
+	}
+	if task.Title != "new title" || task.Project != "Inbox" || task.Due != "" || task.Priority != 4 || len(task.Labels) != 0 {
+		t.Fatalf("task = %+v, want inline metadata reset to defaults", task)
+	}
+}
+
 func ids(tasks []Task) []int {
 	out := make([]int, len(tasks))
 	for i, task := range tasks {
