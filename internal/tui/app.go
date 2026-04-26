@@ -24,6 +24,7 @@ type model struct {
 	height     int
 	search     string
 	input      inputState
+	inputUndo  []inputState
 	editing    bool
 	editTaskID int
 	editField  int
@@ -89,14 +90,7 @@ func Run() (*ExportedTask, error) {
 	if len(store.Tasks) == 0 {
 		store.Add("Press n to add your first task", "Inbox")
 	}
-	m := model{
-		store:  store,
-		path:   path,
-		view:   "Today",
-		focus:  paneTasks,
-		width:  100,
-		height: 30,
-	}
+	m := initialModel(store, path)
 	final, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion()).Run()
 	if err != nil {
 		return nil, err
@@ -112,16 +106,22 @@ func Run() (*ExportedTask, error) {
 	return &ExportedTask{ID: task.ID, Title: task.Title, RunPlan: finished.exportPlan}, nil
 }
 
+func initialModel(store todo.Store, path string) model {
+	return model{
+		store:  store,
+		path:   path,
+		view:   "Today",
+		focus:  paneSidebar,
+		width:  100,
+		height: 30,
+	}
+}
+
 func (m model) Init() tea.Cmd {
 	return nil
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if m.input.active && isCtrlDeleteSequence(msg) {
-		m.deleteInputForward(true)
-		m.syncLiveInput()
-		return m, nil
-	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -300,6 +300,15 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		return m.commitInput()
+	case "ctrl+z", "u":
+		if len(m.inputUndo) > 0 {
+			last := len(m.inputUndo) - 1
+			m.input = m.inputUndo[last]
+			m.inputUndo = m.inputUndo[:last]
+			m.syncLiveInput()
+		} else {
+			m.flash("Nothing to undo")
+		}
 	case "up", "down":
 		if m.input.kind == "edit" {
 			m.input = inputState{}
@@ -319,33 +328,55 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "end", "ctrl+e":
 		m.input.cursor = len([]rune(m.input.value))
 	case "delete":
-		m.deleteInputForward(true)
+		m.checkpointInput()
+		m.deleteInputForward(false)
 		m.syncLiveInput()
-	case "ctrl+delete", "alt+delete", "alt+d", "ctrl+d":
+	case "alt+delete", "alt+d":
+		m.checkpointInput()
 		m.deleteInputForward(true)
 		m.syncLiveInput()
 	case "backspace":
+		m.checkpointInput()
 		m.deleteInputBackward(false)
 		m.syncLiveInput()
 	case "ctrl+h":
+		m.checkpointInput()
 		m.deleteInputBackward(false)
 		m.syncLiveInput()
 	case "ctrl+w", "alt+backspace":
+		m.checkpointInput()
 		m.deleteInputBackward(true)
 		m.syncLiveInput()
 	case "ctrl+u":
+		m.checkpointInput()
 		m.deleteInputBeforeCursor()
 		m.syncLiveInput()
 	case "ctrl+k":
+		m.checkpointInput()
 		m.deleteInputAfterCursor()
 		m.syncLiveInput()
 	default:
 		if len(msg.Runes) > 0 {
+			m.checkpointInput()
 			m.insertInputText(string(msg.Runes))
 			m.syncLiveInput()
 		}
 	}
 	return m, nil
+}
+
+func (m *model) checkpointInput() {
+	if !m.input.active {
+		return
+	}
+	input := m.input
+	if len(m.inputUndo) > 0 {
+		last := m.inputUndo[len(m.inputUndo)-1]
+		if last.value == input.value && last.cursor == input.cursor {
+			return
+		}
+	}
+	m.inputUndo = append(m.inputUndo, input)
 }
 
 func (m *model) updateInputMouse(msg tea.MouseMsg) {
@@ -1197,29 +1228,6 @@ func cursorIndexForInputPosition(value string, width int, line int, x int) int {
 		}
 	}
 	return min(len([]rune(value)), offset+cursorIndexForWidth(lines[line], x))
-}
-
-func isCtrlDeleteSequence(msg tea.Msg) bool {
-	if key, ok := msg.(tea.KeyMsg); ok {
-		return key.String() == "ctrl+delete" || key.String() == "alt+delete"
-	}
-	stringer, ok := msg.(fmt.Stringer)
-	if !ok {
-		return false
-	}
-	value := stringer.String()
-	switch {
-	case strings.Contains(value, "51 59 53 126"):
-		return true
-	case strings.Contains(value, "51 59 54 126"):
-		return true
-	case strings.Contains(value, "51 59 55 126"):
-		return true
-	case strings.Contains(value, "51 59 56 126"):
-		return true
-	default:
-		return false
-	}
 }
 
 func appendPendingLine(lines []string, line string) []string {

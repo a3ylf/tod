@@ -71,6 +71,13 @@ func TestPaneNavigation(t *testing.T) {
 	}
 }
 
+func TestInitialModelStartsOnViews(t *testing.T) {
+	m := initialModel(todo.Store{}, "/tmp/tasks.json")
+	if m.view != "Today" || m.focus != paneSidebar {
+		t.Fatalf("initial state = (%q, %v), want Today with views focus", m.view, m.focus)
+	}
+}
+
 func TestViewsStartWithTodayAndHideInbox(t *testing.T) {
 	m := model{
 		store: todo.Store{Tasks: []todo.Task{{ID: 1, Title: "one", Project: "Inbox", Priority: 4}}},
@@ -172,30 +179,42 @@ func TestInputEditingUsesCursor(t *testing.T) {
 	}
 }
 
-func TestCtrlDeleteSequenceDeletesWordForward(t *testing.T) {
+func TestUndoRestoresPreviousInputEdit(t *testing.T) {
+	m := model{input: inputState{active: true, kind: "edit", title: "Edit", value: "abcd", cursor: 2}}
+	updated, _ := m.updateInput(key("X"))
+	m = updated.(model)
+	updated, _ = m.updateInput(key("Y"))
+	m = updated.(model)
+	if m.input.value != "abXYcd" || m.input.cursor != 4 {
+		t.Fatalf("input = (%q, %d), want two edits", m.input.value, m.input.cursor)
+	}
+	updated, _ = m.updateInput(tea.KeyMsg{Type: tea.KeyCtrlZ})
+	m = updated.(model)
+	if m.input.value != "abXcd" || m.input.cursor != 3 {
+		t.Fatalf("input after first undo = (%q, %d), want first edit state", m.input.value, m.input.cursor)
+	}
+	updated, _ = m.updateInput(tea.KeyMsg{Type: tea.KeyCtrlZ})
+	m = updated.(model)
+	if m.input.value != "abcd" || m.input.cursor != 2 {
+		t.Fatalf("input after second undo = (%q, %d), want original edit state", m.input.value, m.input.cursor)
+	}
+}
+
+func TestAltDeleteDeletesWordForwardInInput(t *testing.T) {
 	m := model{input: inputState{active: true, kind: "edit", title: "Edit", value: "one two three", cursor: 4}}
-	updated, _ := m.Update(csiMsg("?CSI[51 59 53 126]?"))
+	updated, _ := m.updateInput(tea.KeyMsg{Type: tea.KeyDelete, Alt: true})
 	m = updated.(model)
 	if m.input.value != "one three" || m.input.cursor != 4 {
 		t.Fatalf("input = (%q, %d), want forward word deleted", m.input.value, m.input.cursor)
 	}
 }
 
-func TestCtrlDDeletesWordForwardInInput(t *testing.T) {
-	m := model{input: inputState{active: true, kind: "edit", title: "Edit", value: "one two three", cursor: 4}}
-	updated, _ := m.updateInput(tea.KeyMsg{Type: tea.KeyCtrlD})
-	m = updated.(model)
-	if m.input.value != "one three" || m.input.cursor != 4 {
-		t.Fatalf("input = (%q, %d), want forward word deleted", m.input.value, m.input.cursor)
-	}
-}
-
-func TestDeleteDeletesWordForwardInInput(t *testing.T) {
-	m := model{input: inputState{active: true, kind: "edit", title: "Edit", value: "one two three", cursor: 4}}
+func TestDeleteDeletesCharacterForwardInInput(t *testing.T) {
+	m := model{input: inputState{active: true, kind: "edit", title: "Edit", value: "one two", cursor: 4}}
 	updated, _ := m.updateInput(key("delete"))
 	m = updated.(model)
-	if m.input.value != "one three" || m.input.cursor != 4 {
-		t.Fatalf("input = (%q, %d), want forward word deleted", m.input.value, m.input.cursor)
+	if m.input.value != "one wo" || m.input.cursor != 4 {
+		t.Fatalf("input = (%q, %d), want forward character deleted", m.input.value, m.input.cursor)
 	}
 }
 
@@ -432,10 +451,4 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyDelete}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
-}
-
-type csiMsg string
-
-func (m csiMsg) String() string {
-	return string(m)
 }
