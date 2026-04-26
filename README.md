@@ -85,22 +85,11 @@ play the game of life
 
 Press `y` to copy the selected task text to the terminal clipboard without
 leaving the TUI. Press `W` to copy the selected task text, quit, and print
-`Copied task: <task>` or `Copied tasks: <tasks>`. Clipboard copy uses
+`Copied task:` or `Copied tasks:` followed by the copied text on the next line.
+Clipboard copy uses
 `clip.exe` on WSL/Windows when available, then falls back to OSC52 for terminals
 that support it.
 
 Use ctrl-up/ctrl-down in the task list to select a contiguous range. `y`, `w`,
 and `W` use all selected tasks joined with newlines. Editing is disabled while
 multiple tasks are selected.
-
-## Planning
-
-Generate a Codex kickoff prompt for a task:
-
-```sh
-tod --plan 12
-```
-
-The planner loads the task from local storage and runs `codex exec -s read-only`
-as a prompt maker. It asks Codex to return only the kickoff plan, without
-editing files or adding extra commentary.

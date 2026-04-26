@@ -41,7 +41,7 @@ func TestHandleCopiedExportedTaskPrintsCopiedMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleExportedTask returned error: %v", err)
 	}
-	if got := stdout.String(); got != "Copied task: write docs\n" {
+	if got := stdout.String(); got != "Copied task:\nwrite docs\n" {
 		t.Fatalf("stdout = %q, want copied message", got)
 	}
 }
@@ -52,7 +52,7 @@ func TestHandleCopiedExportedTasksPrintsPluralMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleExportedTask returned error: %v", err)
 	}
-	if got := stdout.String(); got != "Copied tasks: one\ntwo\n" {
+	if got := stdout.String(); got != "Copied tasks:\none\ntwo\n" {
 		t.Fatalf("stdout = %q, want copied tasks message", got)
 	}
 }
