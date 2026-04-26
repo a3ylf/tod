@@ -115,6 +115,42 @@ func TestUpDownExitEditMode(t *testing.T) {
 	}
 }
 
+func TestSearchUpdatesLiveAndSlashEnterClears(t *testing.T) {
+	m := model{
+		store: todo.Store{
+			NextID: 3,
+			Tasks: []todo.Task{
+				{ID: 1, Title: "one", Project: "Inbox", Priority: 4},
+				{ID: 2, Title: "two", Project: "Work", Priority: 4},
+			},
+		},
+		view:     "All",
+		focus:    paneTasks,
+		selected: 1,
+	}
+
+	updated, _ := m.updateNormal(key("/"))
+	m = updated.(model)
+	updated, _ = m.updateInput(key("#"))
+	m = updated.(model)
+	if m.search != "#" {
+		t.Fatalf("live search = %q, want #", m.search)
+	}
+	if m.selected != 0 {
+		t.Fatalf("selected after live search = %d, want clamped to 0", m.selected)
+	}
+
+	updated, _ = m.updateInput(key("enter"))
+	m = updated.(model)
+	updated, _ = m.updateNormal(key("/"))
+	m = updated.(model)
+	updated, _ = m.updateInput(key("enter"))
+	m = updated.(model)
+	if m.search != "" {
+		t.Fatalf("search after slash enter = %q, want empty", m.search)
+	}
+}
+
 func TestWExportsSelectedTask(t *testing.T) {
 	m := model{
 		store: todo.Store{

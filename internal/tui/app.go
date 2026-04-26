@@ -207,7 +207,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.startInput("labels", "Labels", strings.Join(task.Labels, ", "))
 		}
 	case "/":
-		m.startInput("search", "Search", m.search)
+		m.startInput("search", "Search", "")
 	case "c":
 		m.search = ""
 		m.flash("Search cleared")
@@ -274,12 +274,21 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			runes := []rune(m.input.value)
 			m.input.value = string(runes[:len(runes)-1])
 		}
+		m.syncLiveInput()
 	default:
 		if len(msg.Runes) > 0 {
 			m.input.value += string(msg.Runes)
+			m.syncLiveInput()
 		}
 	}
 	return m, nil
+}
+
+func (m *model) syncLiveInput() {
+	if m.input.kind == "search" {
+		m.search = strings.TrimSpace(m.input.value)
+		m.clampSelection()
+	}
 }
 
 func (m model) commitInput() (tea.Model, tea.Cmd) {
