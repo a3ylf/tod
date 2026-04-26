@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -61,6 +62,10 @@ type inputState struct {
 type savedMsg struct {
 	text string
 	err  error
+}
+
+type copiedMsg struct {
+	err error
 }
 
 var (
@@ -136,6 +141,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.messageAt = time.Now()
 		return m, nil
+	case copiedMsg:
+		if msg.err != nil {
+			m.flash("Copy failed: " + msg.err.Error())
+		} else {
+			m.flash("Copied")
+		}
+		return m, nil
 	case tea.KeyMsg:
 		if m.input.active {
 			return m.updateInput(msg)
@@ -181,7 +193,6 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "y":
 		if task := m.currentTask(); task != nil {
-			m.flash("Copied")
 			return m, copyTaskCmd(task.Title)
 		}
 	case "up", "k":
@@ -703,8 +714,31 @@ func (m model) save(message string) tea.Cmd {
 
 func copyTaskCmd(text string) tea.Cmd {
 	return func() tea.Msg {
+		if path, err := exec.LookPath("clip.exe"); err == nil {
+			cmd := exec.Command(path)
+			stdin, err := cmd.StdinPipe()
+			if err != nil {
+				return copiedMsg{err: err}
+			}
+			if err := cmd.Start(); err != nil {
+				return copiedMsg{err: err}
+			}
+			if _, err := stdin.Write([]byte(text)); err != nil {
+				_ = stdin.Close()
+				_ = cmd.Wait()
+				return copiedMsg{err: err}
+			}
+			if err := stdin.Close(); err != nil {
+				_ = cmd.Wait()
+				return copiedMsg{err: err}
+			}
+			if err := cmd.Wait(); err != nil {
+				return copiedMsg{err: err}
+			}
+			return copiedMsg{}
+		}
 		fmt.Print(osc52.New(text).String())
-		return nil
+		return copiedMsg{}
 	}
 }
 

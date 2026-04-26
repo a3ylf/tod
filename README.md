@@ -83,8 +83,9 @@ play the game of life
 ```
 
 Press `y` to copy the selected task text to the terminal clipboard without
-leaving the TUI. Press `W` to copy the selected task text and quit. Clipboard
-copy uses OSC52, so terminal support must be enabled.
+leaving the TUI. Press `W` to copy the selected task text, quit, and print
+`Copied task: <task>`. Clipboard copy uses `clip.exe` on WSL/Windows when
+available, then falls back to OSC52 for terminals that support it.
 
 ## Planning
 
