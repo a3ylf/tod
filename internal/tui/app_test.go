@@ -123,6 +123,32 @@ func TestTextEditReplacesTaskFields(t *testing.T) {
 	}
 }
 
+func TestInputEditingUsesCursor(t *testing.T) {
+	m := model{input: inputState{active: true, kind: "edit", title: "Edit", value: "abcd", cursor: 2}}
+	updated, _ := m.updateInput(key("X"))
+	m = updated.(model)
+	if m.input.value != "abXcd" || m.input.cursor != 3 {
+		t.Fatalf("input = (%q, %d), want inserted at cursor", m.input.value, m.input.cursor)
+	}
+
+	updated, _ = m.updateInput(key("left"))
+	m = updated.(model)
+	updated, _ = m.updateInput(key("backspace"))
+	m = updated.(model)
+	if m.input.value != "aXcd" || m.input.cursor != 1 {
+		t.Fatalf("input after cursor backspace = (%q, %d), want aXcd at 1", m.input.value, m.input.cursor)
+	}
+}
+
+func TestInputMouseMovesCursor(t *testing.T) {
+	m := model{height: 12, input: inputState{active: true, kind: "edit", title: "Edit", value: "abcdef", cursor: 6}}
+	updated, _ := m.Update(tea.MouseMsg(tea.MouseEvent{X: 8, Y: 11, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}))
+	m = updated.(model)
+	if m.input.cursor != 2 {
+		t.Fatalf("cursor = %d, want 2", m.input.cursor)
+	}
+}
+
 func TestUpDownExitEditMode(t *testing.T) {
 	for _, keyName := range []string{"up", "down"} {
 		m := model{
@@ -250,6 +276,18 @@ func TestSelectedTaskBoxWrapsLongTitle(t *testing.T) {
 	}
 }
 
+func TestSelectedTaskBoxKeepsMetadataInlineWhenItFits(t *testing.T) {
+	m := model{selected: 0, focus: paneTasks}
+	task := todo.Task{ID: 1, Title: "MCP learn", Project: "code", Priority: 3, Due: "2026-04-24"}
+	lines := m.selectedTaskBox(0, task, 96)
+	if len(lines) != 3 {
+		t.Fatalf("selected box lines = %d, want single content line", len(lines))
+	}
+	if !strings.Contains(lines[1], "2026-04-24") || !strings.Contains(lines[1], "#code") {
+		t.Fatalf("content line missing metadata: %q", lines[1])
+	}
+}
+
 func TestInputViewWrapsLongEditText(t *testing.T) {
 	m := model{
 		input: inputState{
@@ -282,6 +320,8 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyTab}
 	case "esc":
 		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "backspace":
+		return tea.KeyMsg{Type: tea.KeyBackspace}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }

@@ -40,11 +40,16 @@ func Run(name string, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if exported != nil {
-		if exported.RunPlan {
-			return runPlan(exported.ID)
-		}
-		fmt.Fprintf(stdout, "%d\t%s\n", exported.ID, exported.Title)
+		return handleExportedTask(stdout, exported)
 	}
+	return nil
+}
+
+func handleExportedTask(stdout io.Writer, exported *tui.ExportedTask) error {
+	if exported.RunPlan {
+		return runPlan(exported.ID)
+	}
+	fmt.Fprintln(stdout, exported.Title)
 	return nil
 }
 

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"todos/internal/tui"
 )
 
 func TestRunHelpUsesCommandNameAndSucceeds(t *testing.T) {
@@ -19,5 +21,16 @@ func TestRunHelpUsesCommandNameAndSucceeds(t *testing.T) {
 	}
 	if got := stderr.String(); !strings.Contains(got, "Usage of tod:") {
 		t.Fatalf("stderr = %q, want usage for tod", got)
+	}
+}
+
+func TestHandleExportedTaskPrintsTitleOnly(t *testing.T) {
+	var stdout bytes.Buffer
+	err := handleExportedTask(&stdout, &tui.ExportedTask{ID: 42, Title: "write docs"})
+	if err != nil {
+		t.Fatalf("handleExportedTask returned error: %v", err)
+	}
+	if got := stdout.String(); got != "write docs\n" {
+		t.Fatalf("stdout = %q, want title only", got)
 	}
 }

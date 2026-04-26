@@ -52,6 +52,7 @@ type inputState struct {
 	kind   string
 	title  string
 	value  string
+	cursor int
 }
 
 type savedMsg struct {
@@ -72,6 +73,7 @@ var (
 	borderStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	chipStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8")).Padding(0, 1)
 	activeChipStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("9")).Bold(true).Padding(0, 1)
+	cursorStyle           = lipgloss.NewStyle().Reverse(true)
 )
 
 func Run() (*ExportedTask, error) {
@@ -94,7 +96,7 @@ func Run() (*ExportedTask, error) {
 		width:  100,
 		height: 30,
 	}
-	final, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	final, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +134,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateInput(msg)
 		}
 		return m.updateNormal(msg)
+	case tea.MouseMsg:
+		if m.input.active {
+			m.updateInputMouse(msg)
+		}
+		return m, nil
 	}
 	return m, nil
 }
@@ -274,19 +281,129 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		return m.commitInput()
+	case "left", "ctrl+b":
+		m.moveInputCursor(-1)
+	case "right", "ctrl+f":
+		m.moveInputCursor(1)
+	case "home", "ctrl+a":
+		m.input.cursor = 0
+	case "end", "ctrl+e":
+		m.input.cursor = len([]rune(m.input.value))
+	case "delete":
+		m.deleteInputForward(false)
+		m.syncLiveInput()
+	case "ctrl+delete", "alt+d":
+		m.deleteInputForward(true)
+		m.syncLiveInput()
 	case "backspace":
-		if len(m.input.value) > 0 {
-			runes := []rune(m.input.value)
-			m.input.value = string(runes[:len(runes)-1])
-		}
+		m.deleteInputBackward(false)
+		m.syncLiveInput()
+	case "ctrl+h":
+		m.deleteInputBackward(false)
+		m.syncLiveInput()
+	case "ctrl+w", "alt+backspace":
+		m.deleteInputBackward(true)
+		m.syncLiveInput()
+	case "ctrl+u":
+		m.deleteInputBeforeCursor()
+		m.syncLiveInput()
+	case "ctrl+k":
+		m.deleteInputAfterCursor()
 		m.syncLiveInput()
 	default:
 		if len(msg.Runes) > 0 {
-			m.input.value += string(msg.Runes)
+			m.insertInputText(string(msg.Runes))
 			m.syncLiveInput()
 		}
 	}
 	return m, nil
+}
+
+func (m *model) updateInputMouse(msg tea.MouseMsg) {
+	event := tea.MouseEvent(msg)
+	if event.Action != tea.MouseActionPress || event.Button != tea.MouseButtonLeft {
+		return
+	}
+	inputY := m.height - 1
+	if m.message != "" && time.Since(m.messageAt) < 4*time.Second {
+		inputY--
+	}
+	if event.Y != inputY {
+		return
+	}
+	prefixWidth := ansi.StringWidth(m.input.title + ": ")
+	if event.X <= prefixWidth {
+		m.input.cursor = 0
+		return
+	}
+	m.input.cursor = cursorIndexForWidth(m.input.value, event.X-prefixWidth)
+}
+
+func (m *model) insertInputText(text string) {
+	runes := []rune(m.input.value)
+	m.clampInputCursor()
+	insert := []rune(text)
+	out := make([]rune, 0, len(runes)+len(insert))
+	out = append(out, runes[:m.input.cursor]...)
+	out = append(out, insert...)
+	out = append(out, runes[m.input.cursor:]...)
+	m.input.value = string(out)
+	m.input.cursor += len(insert)
+}
+
+func (m *model) moveInputCursor(delta int) {
+	m.input.cursor += delta
+	m.clampInputCursor()
+}
+
+func (m *model) clampInputCursor() {
+	length := len([]rune(m.input.value))
+	if m.input.cursor < 0 {
+		m.input.cursor = 0
+	}
+	if m.input.cursor > length {
+		m.input.cursor = length
+	}
+}
+
+func (m *model) deleteInputBackward(word bool) {
+	runes := []rune(m.input.value)
+	m.clampInputCursor()
+	if m.input.cursor == 0 {
+		return
+	}
+	start := m.input.cursor - 1
+	if word {
+		start = previousWordStart(runes, m.input.cursor)
+	}
+	m.input.value = string(append(runes[:start], runes[m.input.cursor:]...))
+	m.input.cursor = start
+}
+
+func (m *model) deleteInputForward(word bool) {
+	runes := []rune(m.input.value)
+	m.clampInputCursor()
+	if m.input.cursor >= len(runes) {
+		return
+	}
+	end := m.input.cursor + 1
+	if word {
+		end = nextWordEnd(runes, m.input.cursor)
+	}
+	m.input.value = string(append(runes[:m.input.cursor], runes[end:]...))
+}
+
+func (m *model) deleteInputBeforeCursor() {
+	runes := []rune(m.input.value)
+	m.clampInputCursor()
+	m.input.value = string(runes[m.input.cursor:])
+	m.input.cursor = 0
+}
+
+func (m *model) deleteInputAfterCursor() {
+	runes := []rune(m.input.value)
+	m.clampInputCursor()
+	m.input.value = string(runes[:m.input.cursor])
 }
 
 func (m *model) syncLiveInput() {
@@ -435,9 +552,10 @@ func (m model) inputView(width int) string {
 	if available < 10 {
 		available = 10
 	}
-	lines := wrapTextPreserveWords(m.input.value, available)
+	value := inputValueWithCursor(m.input.value, m.input.cursor)
+	lines := wrapTextPreserveWords(value, available)
 	if len(lines) == 0 {
-		return prefix
+		return prefix + cursorStyle.Render(" ")
 	}
 	var b strings.Builder
 	b.WriteString(prefix)
@@ -452,7 +570,7 @@ func (m model) inputView(width int) string {
 }
 
 func (m *model) startInput(kind, title, value string) {
-	m.input = inputState{active: true, kind: kind, title: title, value: value}
+	m.input = inputState{active: true, kind: kind, title: title, value: value, cursor: len([]rune(value))}
 }
 
 func (m *model) flash(message string) {
@@ -715,6 +833,12 @@ func (m model) taskBoxContent(index int, task todo.Task, width int) []string {
 	prefix := fmt.Sprintf("%s[%s] %s ", cursor, check, priority)
 	meta := strings.TrimSpace(strings.Join(nonEmptyStrings(due, project, labels), " "))
 	titleWidth := width - ansi.StringWidth(prefix)
+	if meta != "" {
+		inlineTitleWidth := titleWidth - 1 - ansi.StringWidth(meta)
+		if inlineTitleWidth >= 10 && ansi.StringWidth(task.Title) <= inlineTitleWidth {
+			return []string{prefix + task.Title + " " + meta}
+		}
+	}
 	if titleWidth < 10 {
 		titleWidth = 10
 	}
@@ -928,6 +1052,57 @@ func wrapTextPreserveWords(s string, width int) []string {
 		return nil
 	}
 	return wrapText(s, width)
+}
+
+func inputValueWithCursor(value string, cursor int) string {
+	runes := []rune(value)
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor > len(runes) {
+		cursor = len(runes)
+	}
+	if cursor == len(runes) {
+		return string(runes) + cursorStyle.Render(" ")
+	}
+	return string(runes[:cursor]) + cursorStyle.Render(string(runes[cursor])) + string(runes[cursor+1:])
+}
+
+func previousWordStart(runes []rune, cursor int) int {
+	i := cursor
+	for i > 0 && runes[i-1] == ' ' {
+		i--
+	}
+	for i > 0 && runes[i-1] != ' ' {
+		i--
+	}
+	return i
+}
+
+func nextWordEnd(runes []rune, cursor int) int {
+	i := cursor
+	for i < len(runes) && runes[i] == ' ' {
+		i++
+	}
+	for i < len(runes) && runes[i] != ' ' {
+		i++
+	}
+	return i
+}
+
+func cursorIndexForWidth(value string, width int) int {
+	if width <= 0 {
+		return 0
+	}
+	current := 0
+	for i, r := range []rune(value) {
+		next := current + ansi.StringWidth(string(r))
+		if width < next {
+			return i
+		}
+		current = next
+	}
+	return len([]rune(value))
 }
 
 func appendPendingLine(lines []string, line string) []string {
