@@ -626,7 +626,7 @@ func (m model) taskListLines(tasks []todo.Task, width int, visible int) []string
 	if visible <= 0 {
 		return nil
 	}
-	taskStart := scrollStart(m.selected, max(1, visible-2), len(tasks))
+	taskStart := scrollStart(m.selected, max(1, visible-4), len(tasks))
 	lines := make([]string, 0, visible)
 	for i := taskStart; i < len(tasks) && len(lines) < visible; i++ {
 		if i == m.selected {
@@ -652,10 +652,51 @@ func (m model) selectedTaskBox(index int, task todo.Task, width int) []string {
 		style = inactiveBorderStyle
 	}
 	top := style.Render("+" + strings.Repeat("-", width-2) + "+")
-	content := m.taskRow(index, task, width-4)
-	middle := style.Render("| ") + pad(content, width-4) + style.Render(" |")
+	content := m.taskBoxContent(index, task, width-4)
+	middle := make([]string, 0, len(content))
+	for _, line := range content {
+		middle = append(middle, style.Render("| ")+pad(line, width-4)+style.Render(" |"))
+	}
 	bottom := style.Render("+" + strings.Repeat("-", width-2) + "+")
-	return []string{top, middle, bottom}
+	return append(append([]string{top}, middle...), bottom)
+}
+
+func (m model) taskBoxContent(index int, task todo.Task, width int) []string {
+	if width < 10 {
+		return []string{m.taskRow(index, task, width)}
+	}
+	check := " "
+	if task.Completed {
+		check = "x"
+	}
+	cursor := "  "
+	if index == m.selected && m.focus == paneTasks {
+		cursor = "> "
+	}
+	priority := priorityBadge(task.Priority, false)
+	due := dueBadge(task, false)
+	project := projectBadge(task.Project)
+	labels := labelsBadge(task.Labels, false)
+	prefix := fmt.Sprintf("%s[%s] %s ", cursor, check, priority)
+	meta := strings.TrimSpace(strings.Join(nonEmptyStrings(due, project, labels), " "))
+	titleWidth := width - ansi.StringWidth(prefix)
+	if titleWidth < 10 {
+		titleWidth = 10
+	}
+	lines := wrapText(task.Title, titleWidth)
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+	rows := make([]string, 0, len(lines)+1)
+	rows = append(rows, prefix+lines[0])
+	indent := strings.Repeat(" ", ansi.StringWidth(prefix))
+	for _, line := range lines[1:] {
+		rows = append(rows, indent+line)
+	}
+	if meta != "" {
+		rows = append(rows, indent+meta)
+	}
+	return rows
 }
 
 func (m model) taskRow(index int, task todo.Task, width int) string {
@@ -783,6 +824,58 @@ func labelsBadge(labels []string, plain bool) string {
 		return value
 	}
 	return mutedStyle.Render(value)
+}
+
+func nonEmptyStrings(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func wrapText(s string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return nil
+	}
+	var lines []string
+	line := ""
+	for _, word := range words {
+		for ansi.StringWidth(word) > width {
+			head := ansi.Truncate(word, width, "")
+			if head == "" {
+				break
+			}
+			lines = appendPendingLine(lines, line)
+			line = ""
+			lines = append(lines, head)
+			word = strings.TrimPrefix(word, head)
+		}
+		if line == "" {
+			line = word
+			continue
+		}
+		if ansi.StringWidth(line)+1+ansi.StringWidth(word) <= width {
+			line += " " + word
+			continue
+		}
+		lines = append(lines, line)
+		line = word
+	}
+	return appendPendingLine(lines, line)
+}
+
+func appendPendingLine(lines []string, line string) []string {
+	if line == "" {
+		return lines
+	}
+	return append(lines, line)
 }
 
 func cyclePriority(task *todo.Task) {

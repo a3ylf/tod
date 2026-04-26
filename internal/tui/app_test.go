@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"todos/internal/todo"
 )
@@ -199,6 +200,26 @@ func TestTaskRowHidesInboxProject(t *testing.T) {
 	row = m.taskRow(0, todo.Task{ID: 1, Title: "one", Project: "Work", Priority: 4}, 80)
 	if !strings.Contains(row, "#Work") {
 		t.Fatalf("task row %q does not contain #Work", row)
+	}
+}
+
+func TestSelectedTaskBoxWrapsLongTitle(t *testing.T) {
+	m := model{selected: 0, focus: paneTasks}
+	task := todo.Task{
+		ID:       1,
+		Title:    "this is a very long task title that should wrap inside the selected box instead of breaking the interface",
+		Project:  "Work",
+		Priority: 4,
+		Due:      "2026-04-25",
+	}
+	lines := m.selectedTaskBox(0, task, 42)
+	if len(lines) < 5 {
+		t.Fatalf("selected box lines = %d, want wrapped content", len(lines))
+	}
+	for _, line := range lines {
+		if got := ansi.StringWidth(line); got > 42 {
+			t.Fatalf("line width = %d, want <= 42: %q", got, line)
+		}
 	}
 }
 
