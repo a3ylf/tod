@@ -660,10 +660,10 @@ func (m model) taskRow(index int, task todo.Task, width int) string {
 	}
 	priority := priorityBadge(task.Priority, false)
 	due := dueBadge(task, false)
-	project := mutedStyle.Render("#" + task.Project)
+	project := projectBadge(task.Project, false)
 	labels := labelsBadge(task.Labels, false)
 	if index == m.selected {
-		project = accentStyle.Render("#" + task.Project)
+		project = projectBadge(task.Project, true)
 	}
 	textBudget := width - ansi.StringWidth(cursor) - 4 - ansi.StringWidth(priority) - ansi.StringWidth(due) - ansi.StringWidth(project) - ansi.StringWidth(labels)
 	if textBudget < 10 {
@@ -751,6 +751,17 @@ func priorityBadge(priority int, plain bool) string {
 	default:
 		return mutedStyle.Render(label)
 	}
+}
+
+func projectBadge(project string, active bool) string {
+	if project == "" || project == "Inbox" {
+		return ""
+	}
+	value := "#" + project
+	if active {
+		return accentStyle.Render(value)
+	}
+	return mutedStyle.Render(value)
 }
 
 func labelsBadge(labels []string, plain bool) string {

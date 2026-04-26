@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -129,6 +130,19 @@ func TestShiftWExportsSelectedTaskForPlan(t *testing.T) {
 	}
 	if !m.exportPlan {
 		t.Fatal("exportPlan = false, want true")
+	}
+}
+
+func TestTaskRowHidesInboxProject(t *testing.T) {
+	m := model{selected: 0, focus: paneTasks}
+	row := m.taskRow(0, todo.Task{ID: 1, Title: "one", Project: "Inbox", Priority: 4}, 80)
+	if strings.Contains(row, "#Inbox") {
+		t.Fatalf("task row %q contains #Inbox", row)
+	}
+
+	row = m.taskRow(0, todo.Task{ID: 1, Title: "one", Project: "Work", Priority: 4}, 80)
+	if !strings.Contains(row, "#Work") {
+		t.Fatalf("task row %q does not contain #Work", row)
 	}
 }
 
