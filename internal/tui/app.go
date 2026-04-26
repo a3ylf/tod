@@ -55,11 +55,13 @@ const (
 )
 
 type inputState struct {
-	active bool
-	kind   string
-	title  string
-	value  string
-	cursor int
+	active      bool
+	kind        string
+	title       string
+	value       string
+	cursor      int
+	selectStart int
+	selecting   bool
 }
 
 type savedMsg struct {
@@ -363,16 +365,22 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.editTaskID = 0
 		}
 	case "left", "ctrl+b":
+		m.clearInputSelection()
 		m.moveInputCursor(-1)
 	case "right", "ctrl+f":
+		m.clearInputSelection()
 		m.moveInputCursor(1)
 	case "ctrl+left", "alt+left":
+		m.clearInputSelection()
 		m.input.cursor = previousWordStart([]rune(m.input.value), m.input.cursor)
 	case "ctrl+right", "alt+right":
+		m.clearInputSelection()
 		m.input.cursor = nextWordEnd([]rune(m.input.value), m.input.cursor)
 	case "home", "ctrl+a":
+		m.clearInputSelection()
 		m.input.cursor = 0
 	case "end", "ctrl+e":
+		m.clearInputSelection()
 		m.input.cursor = len([]rune(m.input.value))
 	case "delete":
 		m.checkpointInput()
@@ -428,7 +436,7 @@ func (m *model) checkpointInput() {
 
 func (m *model) updateInputMouse(msg tea.MouseMsg) {
 	event := tea.MouseEvent(msg)
-	if event.Action != tea.MouseActionPress || event.Button != tea.MouseButtonLeft {
+	if event.Button != tea.MouseButtonLeft {
 		return
 	}
 	inputTop, inputHeight, available := m.inputLayout()
@@ -439,14 +447,26 @@ func (m *model) updateInputMouse(msg tea.MouseMsg) {
 	line := event.Y - inputTop
 	x := event.X
 	x -= prefixWidth
-	if x <= 0 {
-		m.input.cursor = 0
-		return
+	nextCursor := 0
+	if x > 0 {
+		nextCursor = cursorIndexForInputPosition(m.input.value, available, line, x)
 	}
-	m.input.cursor = cursorIndexForInputPosition(m.input.value, available, line, x)
+	switch event.Action {
+	case tea.MouseActionPress:
+		m.input.cursor = nextCursor
+		m.input.selectStart = nextCursor
+		m.input.selecting = true
+	case tea.MouseActionMotion:
+		if !m.input.selecting {
+			m.input.selectStart = m.input.cursor
+			m.input.selecting = true
+		}
+		m.input.cursor = nextCursor
+	}
 }
 
 func (m *model) insertInputText(text string) {
+	m.deleteInputSelection()
 	runes := []rune(m.input.value)
 	m.clampInputCursor()
 	insert := []rune(text)
@@ -474,6 +494,9 @@ func (m *model) clampInputCursor() {
 }
 
 func (m *model) deleteInputBackward(word bool) {
+	if m.deleteInputSelection() {
+		return
+	}
 	runes := []rune(m.input.value)
 	m.clampInputCursor()
 	if m.input.cursor == 0 {
@@ -488,6 +511,9 @@ func (m *model) deleteInputBackward(word bool) {
 }
 
 func (m *model) deleteInputForward(word bool) {
+	if m.deleteInputSelection() {
+		return
+	}
 	runes := []rune(m.input.value)
 	m.clampInputCursor()
 	if m.input.cursor >= len(runes) {
@@ -501,6 +527,9 @@ func (m *model) deleteInputForward(word bool) {
 }
 
 func (m *model) deleteInputBeforeCursor() {
+	if m.deleteInputSelection() {
+		return
+	}
 	runes := []rune(m.input.value)
 	m.clampInputCursor()
 	m.input.value = string(runes[m.input.cursor:])
@@ -508,9 +537,45 @@ func (m *model) deleteInputBeforeCursor() {
 }
 
 func (m *model) deleteInputAfterCursor() {
+	if m.deleteInputSelection() {
+		return
+	}
 	runes := []rune(m.input.value)
 	m.clampInputCursor()
 	m.input.value = string(runes[:m.input.cursor])
+}
+
+func (m *model) deleteInputSelection() bool {
+	start, end, ok := m.inputSelectionBounds()
+	if !ok {
+		return false
+	}
+	runes := []rune(m.input.value)
+	m.input.value = string(append(runes[:start], runes[end:]...))
+	m.input.cursor = start
+	m.clearInputSelection()
+	return true
+}
+
+func (m *model) clearInputSelection() {
+	m.input.selectStart = -1
+	m.input.selecting = false
+}
+
+func (m model) inputSelectionBounds() (int, int, bool) {
+	if !m.input.selecting || m.input.selectStart < 0 || m.input.selectStart == m.input.cursor {
+		return 0, 0, false
+	}
+	start := min(m.input.selectStart, m.input.cursor)
+	end := max(m.input.selectStart, m.input.cursor)
+	length := len([]rune(m.input.value))
+	if start < 0 {
+		start = 0
+	}
+	if end > length {
+		end = length
+	}
+	return start, end, start < end
 }
 
 func (m *model) syncLiveInput() {
@@ -667,19 +732,47 @@ func (m model) inputView(width int) string {
 	if available < 10 {
 		available = 10
 	}
-	value := inputValueWithCursor(m.input.value, m.input.cursor)
-	lines := wrapTextPreserveWords(value, available)
+	lines := wrapTextPreserveWords(m.input.value, available)
 	if len(lines) == 0 {
 		return prefix + cursorStyle.Render(" ")
 	}
 	var b strings.Builder
 	b.WriteString(prefix)
-	b.WriteString(lines[0])
+	b.WriteString(m.renderInputSegment(lines[0], 0))
 	indent := strings.Repeat(" ", ansi.StringWidth(prefix))
+	offset := len([]rune(lines[0]))
 	for _, line := range lines[1:] {
+		if offset < len([]rune(m.input.value)) {
+			offset++
+		}
 		b.WriteByte('\n')
 		b.WriteString(indent)
-		b.WriteString(line)
+		b.WriteString(m.renderInputSegment(line, offset))
+		offset += len([]rune(line))
+	}
+	if m.input.cursor == len([]rune(m.input.value)) {
+		b.WriteString(cursorStyle.Render(" "))
+	}
+	return b.String()
+}
+
+func (m model) renderInputSegment(segment string, offset int) string {
+	runes := []rune(segment)
+	start, end, hasSelection := m.inputSelectionBounds()
+	tokenStyles := inputTokenStyles(m.input.value)
+	var b strings.Builder
+	for i, r := range runes {
+		index := offset + i
+		rendered := string(r)
+		if style, ok := tokenStyles[index]; ok && m.input.kind == "edit" {
+			rendered = style.Render(rendered)
+		}
+		if hasSelection && index >= start && index < end {
+			rendered = cursorStyle.Render(string(r))
+		} else if index == m.input.cursor {
+			rendered = cursorStyle.Render(string(r))
+		}
+		b.WriteString(rendered)
 	}
 	return b.String()
 }
@@ -707,7 +800,7 @@ func (m model) inputLayout() (top int, height int, available int) {
 }
 
 func (m *model) startInput(kind, title, value string) {
-	m.input = inputState{active: true, kind: kind, title: title, value: value, cursor: len([]rune(value))}
+	m.input = inputState{active: true, kind: kind, title: title, value: value, cursor: len([]rune(value)), selectStart: -1}
 }
 
 func (m *model) flash(message string) {
@@ -1193,6 +1286,80 @@ func taskTitles(tasks []todo.Task) string {
 		parts = append(parts, task.Title)
 	}
 	return strings.Join(parts, "\n")
+}
+
+func inputTokenStyles(value string) map[int]lipgloss.Style {
+	styles := map[int]lipgloss.Style{}
+	runes := []rune(value)
+	start := -1
+	applyToken := func(end int) {
+		if start < 0 || start >= end {
+			return
+		}
+		token := string(runes[start:end])
+		style, ok := inputTokenStyle(token)
+		if !ok {
+			return
+		}
+		for i := start; i < end; i++ {
+			styles[i] = style
+		}
+	}
+	for i, r := range runes {
+		if r == ' ' || r == '\t' {
+			applyToken(i)
+			start = -1
+			continue
+		}
+		if start < 0 {
+			start = i
+		}
+	}
+	applyToken(len(runes))
+	return styles
+}
+
+func inputTokenStyle(token string) (lipgloss.Style, bool) {
+	switch {
+	case isPriorityToken(token):
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true), true
+	case strings.HasPrefix(token, "#") && len(token) > 1:
+		return accentStyle, true
+	case strings.HasPrefix(token, "@") && len(token) > 1:
+		return mutedStyle, true
+	case isDateToken(token):
+		return warnStyle, true
+	default:
+		return lipgloss.Style{}, false
+	}
+}
+
+func isPriorityToken(token string) bool {
+	return len(token) == 2 && token[0] == 'p' && token[1] >= '1' && token[1] <= '4'
+}
+
+func isDateToken(token string) bool {
+	if token == "today" || token == "tomorrow" {
+		return true
+	}
+	if strings.HasPrefix(token, "+") && strings.HasSuffix(token, "d") && len(token) > 2 {
+		return true
+	}
+	if len(token) != len("2006-01-02") {
+		return false
+	}
+	for i, r := range token {
+		if i == 4 || i == 7 {
+			if r != '-' {
+				return false
+			}
+			continue
+		}
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (m model) exportCount() int {

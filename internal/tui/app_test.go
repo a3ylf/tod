@@ -218,6 +218,32 @@ func TestDeleteDeletesCharacterForwardInInput(t *testing.T) {
 	}
 }
 
+func TestMouseSelectionCanBeDeletedInEditInput(t *testing.T) {
+	m := model{height: 12, input: inputState{active: true, kind: "edit", title: "Edit", value: "abcdef", cursor: 6, selectStart: -1}}
+	inputTop, _, _ := m.inputLayout()
+	updated, _ := m.Update(tea.MouseMsg(tea.MouseEvent{X: 7, Y: inputTop, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}))
+	m = updated.(model)
+	updated, _ = m.Update(tea.MouseMsg(tea.MouseEvent{X: 10, Y: inputTop, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft}))
+	m = updated.(model)
+	if _, _, ok := m.inputSelectionBounds(); !ok {
+		t.Fatalf("expected mouse selection, got input %+v", m.input)
+	}
+	updated, _ = m.updateInput(key("delete"))
+	m = updated.(model)
+	if m.input.value != "aef" || m.input.cursor != 1 {
+		t.Fatalf("input after deleting selection = (%q, %d), want aef at 1", m.input.value, m.input.cursor)
+	}
+}
+
+func TestEditInputViewColorsTokens(t *testing.T) {
+	styles := inputTokenStyles("task p3 2026-04-25 #Work @focus")
+	for _, index := range []int{5, 8, 19, 25} {
+		if _, ok := styles[index]; !ok {
+			t.Fatalf("token styles missing index %d: %#v", index, styles)
+		}
+	}
+}
+
 func TestUndoRestoresPreviousStore(t *testing.T) {
 	m := model{
 		store: todo.Store{
