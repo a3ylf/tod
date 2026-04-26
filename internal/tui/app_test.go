@@ -61,13 +61,28 @@ func TestPaneNavigation(t *testing.T) {
 	}
 	updated, _ = m.updateNormal(key("down"))
 	m = updated.(model)
-	if m.view != "Today" {
-		t.Fatalf("sidebar down view = %q, want Today", m.view)
+	if m.view != "Upcoming" {
+		t.Fatalf("sidebar down view = %q, want Upcoming", m.view)
 	}
 	updated, _ = m.updateNormal(key("right"))
 	m = updated.(model)
 	if m.focus != paneTasks {
 		t.Fatalf("right focus = %v, want tasks", m.focus)
+	}
+}
+
+func TestViewsStartWithTodayAndHideInbox(t *testing.T) {
+	m := model{
+		store: todo.Store{Tasks: []todo.Task{{ID: 1, Title: "one", Project: "Inbox", Priority: 4}}},
+	}
+	views := m.views()
+	if len(views) == 0 || views[0] != "Today" {
+		t.Fatalf("views = %v, want Today first", views)
+	}
+	for _, view := range views {
+		if view == "Inbox" {
+			t.Fatalf("views = %v, want Inbox hidden", views)
+		}
 	}
 }
 
@@ -172,6 +187,36 @@ func TestCtrlDDeletesWordForwardInInput(t *testing.T) {
 	m = updated.(model)
 	if m.input.value != "one three" || m.input.cursor != 4 {
 		t.Fatalf("input = (%q, %d), want forward word deleted", m.input.value, m.input.cursor)
+	}
+}
+
+func TestDeleteDeletesWordForwardInInput(t *testing.T) {
+	m := model{input: inputState{active: true, kind: "edit", title: "Edit", value: "one two three", cursor: 4}}
+	updated, _ := m.updateInput(key("delete"))
+	m = updated.(model)
+	if m.input.value != "one three" || m.input.cursor != 4 {
+		t.Fatalf("input = (%q, %d), want forward word deleted", m.input.value, m.input.cursor)
+	}
+}
+
+func TestUndoRestoresPreviousStore(t *testing.T) {
+	m := model{
+		store: todo.Store{
+			NextID: 2,
+			Tasks:  []todo.Task{{ID: 1, Title: "one", Project: "Inbox", Priority: 4}},
+		},
+		view:  "All",
+		focus: paneTasks,
+	}
+	updated, _ := m.updateNormal(key("p"))
+	m = updated.(model)
+	if m.store.Tasks[0].Priority != 3 {
+		t.Fatalf("priority = %d, want changed to 3", m.store.Tasks[0].Priority)
+	}
+	updated, _ = m.updateNormal(tea.KeyMsg{Type: tea.KeyCtrlZ})
+	m = updated.(model)
+	if m.store.Tasks[0].Priority != 4 {
+		t.Fatalf("priority after undo = %d, want 4", m.store.Tasks[0].Priority)
 	}
 }
 
@@ -383,6 +428,8 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyEsc}
 	case "backspace":
 		return tea.KeyMsg{Type: tea.KeyBackspace}
+	case "delete":
+		return tea.KeyMsg{Type: tea.KeyDelete}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }

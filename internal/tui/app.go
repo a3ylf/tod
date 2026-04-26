@@ -32,6 +32,7 @@ type model struct {
 	confirmDel bool
 	exportID   int
 	exportPlan bool
+	undoStore  *todo.Store
 }
 
 type ExportedTask struct {
@@ -91,7 +92,7 @@ func Run() (*ExportedTask, error) {
 	m := model{
 		store:  store,
 		path:   path,
-		view:   "Inbox",
+		view:   "Today",
 		focus:  paneTasks,
 		width:  100,
 		height: 30,
@@ -158,6 +159,14 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "q":
 		return m, tea.Sequence(m.save("Saved"), tea.Quit)
+	case "ctrl+z", "u":
+		if m.undoStore != nil {
+			m.store = *m.undoStore
+			m.undoStore = nil
+			m.clampSelection()
+			return m, m.save("Undone")
+		}
+		m.flash("Nothing to undo")
 	case "w":
 		if task := m.currentTask(); task != nil {
 			m.exportID = task.ID
@@ -199,6 +208,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "x", " ":
 		if task := m.currentTask(); task != nil {
+			m.checkpoint()
 			task.ToggleComplete()
 			return m, m.save("Task updated")
 		}
@@ -208,6 +218,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "p":
 		if task := m.currentTask(); task != nil {
+			m.checkpoint()
 			cyclePriority(task)
 			return m, m.save("Priority updated")
 		}
@@ -231,6 +242,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.flash("Press D again to delete")
 				return m, nil
 			}
+			m.checkpoint()
 			m.store.Delete(task.ID)
 			m.confirmDel = false
 			m.clampSelection()
@@ -263,12 +275,14 @@ func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.commitEditField()
 	case "x":
 		if task := m.editingTask(); task != nil {
+			m.checkpoint()
 			task.ToggleComplete()
 			m.clampSelection()
 			return m, m.save("Task updated")
 		}
 	case "p":
 		if task := m.editingTask(); task != nil {
+			m.checkpoint()
 			cyclePriority(task)
 			return m, m.save("Priority updated")
 		}
@@ -305,7 +319,7 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "end", "ctrl+e":
 		m.input.cursor = len([]rune(m.input.value))
 	case "delete":
-		m.deleteInputForward(false)
+		m.deleteInputForward(true)
 		m.syncLiveInput()
 	case "ctrl+delete", "alt+delete", "alt+d", "ctrl+d":
 		m.deleteInputForward(true)
@@ -441,11 +455,13 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 		if strings.HasPrefix(m.view, "#") {
 			project = strings.TrimPrefix(m.view, "#")
 		}
+		m.checkpoint()
 		id := m.store.Add(value, project)
 		m.selectID(id)
 		return m, m.save("Task added")
 	case "title":
 		if task := m.targetTask(); task != nil && value != "" {
+			m.checkpoint()
 			if !todo.ApplyTaskText(task, value, time.Now()) {
 				return m, nil
 			}
@@ -453,6 +469,7 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 		}
 	case "edit":
 		if task := m.editingTask(); task != nil && value != "" {
+			m.checkpoint()
 			if !todo.ReplaceTaskText(task, value, time.Now()) {
 				return m, nil
 			}
@@ -468,6 +485,7 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 				m.flash("Invalid due date")
 				return m, nil
 			}
+			m.checkpoint()
 			task.Due = due
 			return m, m.save("Due date updated")
 		}
@@ -477,11 +495,13 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 			if project == "" {
 				project = "Inbox"
 			}
+			m.checkpoint()
 			task.Project = project
 			return m, m.save("Project updated")
 		}
 	case "labels":
 		if task := m.targetTask(); task != nil {
+			m.checkpoint()
 			task.Labels = todo.CleanLabels(value)
 			return m, m.save("Labels updated")
 		}
@@ -617,6 +637,15 @@ func (m *model) flash(message string) {
 	m.messageAt = time.Now()
 }
 
+func (m *model) checkpoint() {
+	store := m.store
+	store.Tasks = append([]todo.Task(nil), m.store.Tasks...)
+	for i := range store.Tasks {
+		store.Tasks[i].Labels = append([]string(nil), m.store.Tasks[i].Labels...)
+	}
+	m.undoStore = &store
+}
+
 func (m model) focusLabel() string {
 	if m.editing {
 		return activeChipStyle.Render("editing")
@@ -685,11 +714,13 @@ func (m model) commitEditField() (tea.Model, tea.Cmd) {
 	case "Due":
 		m.startInput("due", "Due date (today, tomorrow, +3d, yyyy-mm-dd, clear)", task.Due)
 	case "Priority":
+		m.checkpoint()
 		cyclePriority(task)
 		return m, m.save("Priority updated")
 	case "Labels":
 		m.startInput("labels", "Labels", strings.Join(task.Labels, ", "))
 	case "Completed":
+		m.checkpoint()
 		task.ToggleComplete()
 		m.clampSelection()
 		return m, m.save("Task updated")
@@ -765,7 +796,7 @@ func (m *model) selectID(id int) {
 }
 
 func (m model) views() []string {
-	views := []string{"Inbox", "Today", "Upcoming", "All", "Completed"}
+	views := []string{"Today", "Upcoming", "All", "Completed"}
 	for _, project := range todo.Projects(m.store.Tasks) {
 		if project != "Inbox" {
 			views = append(views, "#"+project)
