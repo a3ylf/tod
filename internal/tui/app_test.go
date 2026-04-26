@@ -140,12 +140,30 @@ func TestInputEditingUsesCursor(t *testing.T) {
 	}
 }
 
+func TestCtrlDeleteSequenceDeletesWordForward(t *testing.T) {
+	m := model{input: inputState{active: true, kind: "edit", title: "Edit", value: "one two three", cursor: 4}}
+	updated, _ := m.Update(csiMsg("?CSI[51 59 53 126]?"))
+	m = updated.(model)
+	if m.input.value != "one three" || m.input.cursor != 4 {
+		t.Fatalf("input = (%q, %d), want forward word deleted", m.input.value, m.input.cursor)
+	}
+}
+
 func TestInputMouseMovesCursor(t *testing.T) {
 	m := model{height: 12, input: inputState{active: true, kind: "edit", title: "Edit", value: "abcdef", cursor: 6}}
-	updated, _ := m.Update(tea.MouseMsg(tea.MouseEvent{X: 8, Y: 11, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}))
+	updated, _ := m.Update(tea.MouseMsg(tea.MouseEvent{X: 8, Y: 10, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}))
 	m = updated.(model)
 	if m.input.cursor != 2 {
 		t.Fatalf("cursor = %d, want 2", m.input.cursor)
+	}
+}
+
+func TestInputMouseMovesCursorOnWrappedLine(t *testing.T) {
+	m := model{width: 18, height: 12, input: inputState{active: true, kind: "edit", title: "Edit", value: "one two three", cursor: 13}}
+	updated, _ := m.Update(tea.MouseMsg(tea.MouseEvent{X: 7, Y: 11, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}))
+	m = updated.(model)
+	if m.input.cursor <= len("one two ") {
+		t.Fatalf("cursor = %d, want cursor on wrapped line", m.input.cursor)
 	}
 }
 
@@ -324,4 +342,10 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyBackspace}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+}
+
+type csiMsg string
+
+func (m csiMsg) String() string {
+	return string(m)
 }

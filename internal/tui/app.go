@@ -96,7 +96,7 @@ func Run() (*ExportedTask, error) {
 		width:  100,
 		height: 30,
 	}
-	final, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
+	final, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion()).Run()
 	if err != nil {
 		return nil, err
 	}
@@ -138,6 +138,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.input.active {
 			m.updateInputMouse(msg)
 		}
+		return m, nil
+	}
+	if m.input.active && isCtrlDeleteSequence(msg) {
+		m.deleteInputForward(true)
+		m.syncLiveInput()
 		return m, nil
 	}
 	return m, nil
@@ -285,6 +290,10 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveInputCursor(-1)
 	case "right", "ctrl+f":
 		m.moveInputCursor(1)
+	case "ctrl+left", "alt+left":
+		m.input.cursor = previousWordStart([]rune(m.input.value), m.input.cursor)
+	case "ctrl+right", "alt+right":
+		m.input.cursor = nextWordEnd([]rune(m.input.value), m.input.cursor)
 	case "home", "ctrl+a":
 		m.input.cursor = 0
 	case "end", "ctrl+e":
@@ -292,7 +301,7 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "delete":
 		m.deleteInputForward(false)
 		m.syncLiveInput()
-	case "ctrl+delete", "alt+d":
+	case "ctrl+delete", "alt+delete", "alt+d":
 		m.deleteInputForward(true)
 		m.syncLiveInput()
 	case "backspace":
@@ -324,19 +333,19 @@ func (m *model) updateInputMouse(msg tea.MouseMsg) {
 	if event.Action != tea.MouseActionPress || event.Button != tea.MouseButtonLeft {
 		return
 	}
-	inputY := m.height - 1
-	if m.message != "" && time.Since(m.messageAt) < 4*time.Second {
-		inputY--
-	}
-	if event.Y != inputY {
+	inputTop, inputHeight, available := m.inputLayout()
+	if event.Y < inputTop || event.Y >= inputTop+inputHeight {
 		return
 	}
 	prefixWidth := ansi.StringWidth(m.input.title + ": ")
-	if event.X <= prefixWidth {
+	line := event.Y - inputTop
+	x := event.X
+	x -= prefixWidth
+	if x <= 0 {
 		m.input.cursor = 0
 		return
 	}
-	m.input.cursor = cursorIndexForWidth(m.input.value, event.X-prefixWidth)
+	m.input.cursor = cursorIndexForInputPosition(m.input.value, available, line, x)
 }
 
 func (m *model) insertInputText(text string) {
@@ -567,6 +576,28 @@ func (m model) inputView(width int) string {
 		b.WriteString(line)
 	}
 	return b.String()
+}
+
+func (m model) inputLayout() (top int, height int, available int) {
+	width := m.width
+	if width <= 0 {
+		width = 100
+	}
+	contentRows := m.height - 5
+	if contentRows < 8 {
+		contentRows = 8
+	}
+	top = contentRows + 2
+	prefixWidth := ansi.StringWidth(m.input.title + ": ")
+	available = width - prefixWidth
+	if available < 10 {
+		available = 10
+	}
+	height = len(wrapTextPreserveWords(m.input.value, available))
+	if height == 0 {
+		height = 1
+	}
+	return top, height, available
 }
 
 func (m *model) startInput(kind, title, value string) {
@@ -1087,6 +1118,9 @@ func nextWordEnd(runes []rune, cursor int) int {
 	for i < len(runes) && runes[i] != ' ' {
 		i++
 	}
+	for i < len(runes) && runes[i] == ' ' {
+		i++
+	}
 	return i
 }
 
@@ -1103,6 +1137,40 @@ func cursorIndexForWidth(value string, width int) int {
 		current = next
 	}
 	return len([]rune(value))
+}
+
+func cursorIndexForInputPosition(value string, width int, line int, x int) int {
+	if line <= 0 {
+		return cursorIndexForWidth(value, x)
+	}
+	lines := wrapTextPreserveWords(value, width)
+	if len(lines) == 0 {
+		return 0
+	}
+	if line >= len(lines) {
+		return len([]rune(value))
+	}
+	offset := 0
+	for i := 0; i < line; i++ {
+		offset += len([]rune(lines[i]))
+		if offset < len([]rune(value)) {
+			offset++
+		}
+	}
+	return min(len([]rune(value)), offset+cursorIndexForWidth(lines[line], x))
+}
+
+func isCtrlDeleteSequence(msg tea.Msg) bool {
+	stringer, ok := msg.(fmt.Stringer)
+	if !ok {
+		return false
+	}
+	switch stringer.String() {
+	case "?CSI[51 59 53 126]?", "?CSI[51 59 54 126]?", "?CSI[51 59 55 126]?", "?CSI[51 59 56 126]?":
+		return true
+	default:
+		return false
+	}
 }
 
 func appendPendingLine(lines []string, line string) []string {
@@ -1145,6 +1213,13 @@ func truncate(s string, width int) string {
 
 func max(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b
