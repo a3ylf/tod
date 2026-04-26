@@ -239,7 +239,7 @@ func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "q":
 		return m, tea.Sequence(m.save("Saved"), tea.Quit)
-	case "esc", "e":
+	case "esc", "e", "up", "down":
 		m.editing = false
 		m.editTaskID = 0
 	case "left", "h":

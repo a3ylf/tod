@@ -95,6 +95,26 @@ func TestEditModeTargetsSelectedTask(t *testing.T) {
 	}
 }
 
+func TestUpDownExitEditMode(t *testing.T) {
+	for _, keyName := range []string{"up", "down"} {
+		m := model{
+			store: todo.Store{
+				NextID: 2,
+				Tasks:  []todo.Task{{ID: 1, Title: "one", Project: "Inbox", Priority: 4}},
+			},
+			view:       "Inbox",
+			focus:      paneTasks,
+			editing:    true,
+			editTaskID: 1,
+		}
+		updated, _ := m.updateEdit(key(keyName))
+		m = updated.(model)
+		if m.editing || m.editTaskID != 0 {
+			t.Fatalf("%s left edit state = (%t, %d), want (false, 0)", keyName, m.editing, m.editTaskID)
+		}
+	}
+}
+
 func TestWExportsSelectedTask(t *testing.T) {
 	m := model{
 		store: todo.Store{
