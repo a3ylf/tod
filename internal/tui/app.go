@@ -116,6 +116,11 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.input.active && isCtrlDeleteSequence(msg) {
+		m.deleteInputForward(true)
+		m.syncLiveInput()
+		return m, nil
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -138,11 +143,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.input.active {
 			m.updateInputMouse(msg)
 		}
-		return m, nil
-	}
-	if m.input.active && isCtrlDeleteSequence(msg) {
-		m.deleteInputForward(true)
-		m.syncLiveInput()
 		return m, nil
 	}
 	return m, nil
@@ -286,6 +286,12 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		return m.commitInput()
+	case "up", "down":
+		if m.input.kind == "edit" {
+			m.input = inputState{}
+			m.editing = false
+			m.editTaskID = 0
+		}
 	case "left", "ctrl+b":
 		m.moveInputCursor(-1)
 	case "right", "ctrl+f":
@@ -301,7 +307,7 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "delete":
 		m.deleteInputForward(false)
 		m.syncLiveInput()
-	case "ctrl+delete", "alt+delete", "alt+d":
+	case "ctrl+delete", "alt+delete", "alt+d", "ctrl+d":
 		m.deleteInputForward(true)
 		m.syncLiveInput()
 	case "backspace":
@@ -504,7 +510,7 @@ func (m model) View() string {
 	if bodyWidth < 40 {
 		bodyWidth = 40
 	}
-	contentRows := m.height - 5
+	contentRows := m.height - 6
 	if contentRows < 8 {
 		contentRows = 8
 	}
@@ -514,6 +520,8 @@ func (m model) View() string {
 	b.WriteString(mutedStyle.Render("  " + m.view + "  "))
 	b.WriteString(m.focusLabel())
 	b.WriteString(mutedStyle.Render("  data: " + m.path))
+	b.WriteByte('\n')
+	b.WriteString(borderStyle.Render(strings.Repeat("-", max(1, m.width))))
 	b.WriteByte('\n')
 
 	taskLines := m.taskListLines(tasks, bodyWidth, max(1, contentRows-1))
@@ -583,11 +591,11 @@ func (m model) inputLayout() (top int, height int, available int) {
 	if width <= 0 {
 		width = 100
 	}
-	contentRows := m.height - 5
+	contentRows := m.height - 6
 	if contentRows < 8 {
 		contentRows = 8
 	}
-	top = contentRows + 2
+	top = contentRows + 3
 	prefixWidth := ansi.StringWidth(m.input.title + ": ")
 	available = width - prefixWidth
 	if available < 10 {
@@ -1161,12 +1169,22 @@ func cursorIndexForInputPosition(value string, width int, line int, x int) int {
 }
 
 func isCtrlDeleteSequence(msg tea.Msg) bool {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		return key.String() == "ctrl+delete" || key.String() == "alt+delete"
+	}
 	stringer, ok := msg.(fmt.Stringer)
 	if !ok {
 		return false
 	}
-	switch stringer.String() {
-	case "?CSI[51 59 53 126]?", "?CSI[51 59 54 126]?", "?CSI[51 59 55 126]?", "?CSI[51 59 56 126]?":
+	value := stringer.String()
+	switch {
+	case strings.Contains(value, "51 59 53 126"):
+		return true
+	case strings.Contains(value, "51 59 54 126"):
+		return true
+	case strings.Contains(value, "51 59 55 126"):
+		return true
+	case strings.Contains(value, "51 59 56 126"):
 		return true
 	default:
 		return false

@@ -71,6 +71,23 @@ func TestPaneNavigation(t *testing.T) {
 	}
 }
 
+func TestViewSeparatesHeaderFromContent(t *testing.T) {
+	m := model{
+		store: todo.Store{
+			NextID: 2,
+			Tasks:  []todo.Task{{ID: 1, Title: "one", Project: "Inbox", Priority: 4}},
+		},
+		view:   "Inbox",
+		focus:  paneTasks,
+		width:  80,
+		height: 20,
+	}
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) < 2 || !strings.Contains(lines[1], "---") {
+		t.Fatalf("second line = %q, want header separator", lines[1])
+	}
+}
+
 func TestEditModeTargetsSelectedTask(t *testing.T) {
 	m := model{
 		store: todo.Store{
@@ -149,9 +166,34 @@ func TestCtrlDeleteSequenceDeletesWordForward(t *testing.T) {
 	}
 }
 
+func TestCtrlDDeletesWordForwardInInput(t *testing.T) {
+	m := model{input: inputState{active: true, kind: "edit", title: "Edit", value: "one two three", cursor: 4}}
+	updated, _ := m.updateInput(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m = updated.(model)
+	if m.input.value != "one three" || m.input.cursor != 4 {
+		t.Fatalf("input = (%q, %d), want forward word deleted", m.input.value, m.input.cursor)
+	}
+}
+
+func TestUpDownExitTextEditInput(t *testing.T) {
+	for _, keyName := range []string{"up", "down"} {
+		m := model{
+			editing:    true,
+			editTaskID: 1,
+			input:      inputState{active: true, kind: "edit", title: "Edit", value: "one", cursor: 3},
+		}
+		updated, _ := m.updateInput(key(keyName))
+		m = updated.(model)
+		if m.input.active || m.editing || m.editTaskID != 0 {
+			t.Fatalf("%s left state input=%t editing=%t editTaskID=%d, want exited", keyName, m.input.active, m.editing, m.editTaskID)
+		}
+	}
+}
+
 func TestInputMouseMovesCursor(t *testing.T) {
 	m := model{height: 12, input: inputState{active: true, kind: "edit", title: "Edit", value: "abcdef", cursor: 6}}
-	updated, _ := m.Update(tea.MouseMsg(tea.MouseEvent{X: 8, Y: 10, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}))
+	inputTop, _, _ := m.inputLayout()
+	updated, _ := m.Update(tea.MouseMsg(tea.MouseEvent{X: 8, Y: inputTop, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}))
 	m = updated.(model)
 	if m.input.cursor != 2 {
 		t.Fatalf("cursor = %d, want 2", m.input.cursor)
@@ -160,7 +202,8 @@ func TestInputMouseMovesCursor(t *testing.T) {
 
 func TestInputMouseMovesCursorOnWrappedLine(t *testing.T) {
 	m := model{width: 18, height: 12, input: inputState{active: true, kind: "edit", title: "Edit", value: "one two three", cursor: 13}}
-	updated, _ := m.Update(tea.MouseMsg(tea.MouseEvent{X: 7, Y: 11, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}))
+	inputTop, _, _ := m.inputLayout()
+	updated, _ := m.Update(tea.MouseMsg(tea.MouseEvent{X: 7, Y: inputTop + 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}))
 	m = updated.(model)
 	if m.input.cursor <= len("one two ") {
 		t.Fatalf("cursor = %d, want cursor on wrapped line", m.input.cursor)
