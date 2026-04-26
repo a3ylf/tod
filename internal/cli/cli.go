@@ -47,7 +47,11 @@ func Run(name string, args []string, stdout, stderr io.Writer) error {
 
 func handleExportedTask(stdout io.Writer, exported *tui.ExportedTask) error {
 	if exported.Copied {
-		fmt.Fprintf(stdout, "Copied task: %s\n", exported.Title)
+		label := "task"
+		if exported.Count > 1 {
+			label = "tasks"
+		}
+		fmt.Fprintf(stdout, "Copied %s: %s\n", label, exported.Title)
 		return nil
 	}
 	fmt.Fprintln(stdout, exported.Title)

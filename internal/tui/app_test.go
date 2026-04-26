@@ -349,6 +349,85 @@ func TestWExportsSelectedTask(t *testing.T) {
 	}
 }
 
+func TestMultiSelectionExportsSelectedTasks(t *testing.T) {
+	m := model{
+		store: todo.Store{
+			NextID: 4,
+			Tasks: []todo.Task{
+				{ID: 1, Title: "one", Project: "Inbox", Priority: 4},
+				{ID: 2, Title: "two", Project: "Inbox", Priority: 4},
+				{ID: 3, Title: "three", Project: "Inbox", Priority: 4},
+			},
+		},
+		view:  "All",
+		focus: paneTasks,
+	}
+	updated, _ := m.updateNormal(tea.KeyMsg{Type: tea.KeyCtrlDown})
+	m = updated.(model)
+	updated, _ = m.updateNormal(tea.KeyMsg{Type: tea.KeyCtrlDown})
+	m = updated.(model)
+	if got := taskTitles(m.selectedTasks()); got != "one\ntwo\nthree" {
+		t.Fatalf("selected task titles = %q, want three selected tasks", got)
+	}
+
+	updated, _ = m.updateNormal(key("w"))
+	m = updated.(model)
+	if m.exportID != 1 || m.exportTitle != "one\ntwo\nthree" {
+		t.Fatalf("export = (%d, %q), want multi export", m.exportID, m.exportTitle)
+	}
+}
+
+func TestMultiSelectionBoxWrapsSelectedRange(t *testing.T) {
+	m := model{
+		store: todo.Store{
+			NextID: 4,
+			Tasks: []todo.Task{
+				{ID: 1, Title: "one", Project: "Inbox", Priority: 4},
+				{ID: 2, Title: "two", Project: "Inbox", Priority: 4},
+				{ID: 3, Title: "three", Project: "Inbox", Priority: 4},
+			},
+		},
+		view:  "All",
+		focus: paneTasks,
+	}
+	updated, _ := m.updateNormal(tea.KeyMsg{Type: tea.KeyCtrlDown})
+	m = updated.(model)
+	lines := m.taskListLines(m.filteredTasks(), 48, 8)
+	if len(lines) < 4 {
+		t.Fatalf("lines = %v, want range box", lines)
+	}
+	if !strings.Contains(lines[0], "+") || !strings.Contains(lines[3], "+") {
+		t.Fatalf("lines = %v, want range box top and bottom", lines)
+	}
+	if !strings.Contains(lines[1], "one") || !strings.Contains(lines[2], "two") {
+		t.Fatalf("lines = %v, want selected tasks inside box", lines)
+	}
+}
+
+func TestPlainMoveClearsMultiSelection(t *testing.T) {
+	m := model{
+		store: todo.Store{
+			NextID: 3,
+			Tasks: []todo.Task{
+				{ID: 1, Title: "one", Project: "Inbox", Priority: 4},
+				{ID: 2, Title: "two", Project: "Inbox", Priority: 4},
+			},
+		},
+		view:  "All",
+		focus: paneTasks,
+	}
+	updated, _ := m.updateNormal(tea.KeyMsg{Type: tea.KeyCtrlDown})
+	m = updated.(model)
+	if len(m.selectedTasks()) != 2 {
+		t.Fatalf("selected tasks = %d, want 2", len(m.selectedTasks()))
+	}
+	updated, _ = m.updateNormal(key("up"))
+	m = updated.(model)
+	if len(m.selectedTasks()) != 1 {
+		t.Fatalf("selected tasks after plain move = %d, want 1", len(m.selectedTasks()))
+	}
+}
+
 func TestShiftWCopiesSelectedTaskAndQuits(t *testing.T) {
 	m := model{
 		store: todo.Store{
@@ -365,6 +444,27 @@ func TestShiftWCopiesSelectedTaskAndQuits(t *testing.T) {
 	}
 	if !m.copyOnExit {
 		t.Fatal("copyOnExit = false, want true")
+	}
+}
+
+func TestEditDoesNotOpenForMultipleTasks(t *testing.T) {
+	m := model{
+		store: todo.Store{
+			NextID: 3,
+			Tasks: []todo.Task{
+				{ID: 1, Title: "one", Project: "Inbox", Priority: 4},
+				{ID: 2, Title: "two", Project: "Inbox", Priority: 4},
+			},
+		},
+		view:  "All",
+		focus: paneTasks,
+	}
+	updated, _ := m.updateNormal(tea.KeyMsg{Type: tea.KeyCtrlDown})
+	m = updated.(model)
+	updated, _ = m.updateNormal(key("e"))
+	m = updated.(model)
+	if m.editing || m.input.active {
+		t.Fatalf("edit state = (%t, %t), want edit disabled for multi-select", m.editing, m.input.active)
 	}
 }
 

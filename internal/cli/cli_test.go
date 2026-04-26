@@ -45,3 +45,14 @@ func TestHandleCopiedExportedTaskPrintsCopiedMessage(t *testing.T) {
 		t.Fatalf("stdout = %q, want copied message", got)
 	}
 }
+
+func TestHandleCopiedExportedTasksPrintsPluralMessage(t *testing.T) {
+	var stdout bytes.Buffer
+	err := handleExportedTask(&stdout, &tui.ExportedTask{Title: "one\ntwo", Copied: true, Count: 2})
+	if err != nil {
+		t.Fatalf("handleExportedTask returned error: %v", err)
+	}
+	if got := stdout.String(); got != "Copied tasks: one\ntwo\n" {
+		t.Fatalf("stdout = %q, want copied tasks message", got)
+	}
+}

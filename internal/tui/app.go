@@ -15,33 +15,36 @@ import (
 )
 
 type model struct {
-	store      todo.Store
-	path       string
-	view       string
-	focus      pane
-	sidebar    int
-	selected   int
-	taskIDs    []int
-	width      int
-	height     int
-	search     string
-	input      inputState
-	inputUndo  []inputState
-	editing    bool
-	editTaskID int
-	editField  int
-	message    string
-	messageAt  time.Time
-	confirmDel bool
-	exportID   int
-	copyOnExit bool
-	undoStore  *todo.Store
+	store       todo.Store
+	path        string
+	view        string
+	focus       pane
+	sidebar     int
+	selected    int
+	selectFrom  int
+	taskIDs     []int
+	width       int
+	height      int
+	search      string
+	input       inputState
+	inputUndo   []inputState
+	editing     bool
+	editTaskID  int
+	editField   int
+	message     string
+	messageAt   time.Time
+	confirmDel  bool
+	exportID    int
+	exportTitle string
+	copyOnExit  bool
+	undoStore   *todo.Store
 }
 
 type ExportedTask struct {
 	ID     int
 	Title  string
 	Copied bool
+	Count  int
 }
 
 type pane int
@@ -105,21 +108,26 @@ func Run() (*ExportedTask, error) {
 	if !ok || finished.exportID == 0 {
 		return nil, nil
 	}
-	task, ok := finished.store.Task(finished.exportID)
-	if !ok {
-		return nil, nil
+	title := finished.exportTitle
+	if title == "" {
+		task, ok := finished.store.Task(finished.exportID)
+		if !ok {
+			return nil, nil
+		}
+		title = task.Title
 	}
-	return &ExportedTask{ID: task.ID, Title: task.Title, Copied: finished.copyOnExit}, nil
+	return &ExportedTask{ID: finished.exportID, Title: title, Copied: finished.copyOnExit, Count: finished.exportCount()}, nil
 }
 
 func initialModel(store todo.Store, path string) model {
 	return model{
-		store:  store,
-		path:   path,
-		view:   "Today",
-		focus:  paneSidebar,
-		width:  100,
-		height: 30,
+		store:      store,
+		path:       path,
+		view:       "Today",
+		focus:      paneSidebar,
+		selectFrom: -1,
+		width:      100,
+		height:     30,
 	}
 }
 
@@ -181,33 +189,50 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.flash("Nothing to undo")
 	case "w":
-		if task := m.currentTask(); task != nil {
-			m.exportID = task.ID
+		tasks := m.selectedTasks()
+		if len(tasks) > 0 {
+			m.exportID = tasks[0].ID
+			m.exportTitle = taskTitles(tasks)
 			return m, tea.Sequence(m.save("Saved"), tea.Quit)
 		}
 	case "W":
-		if task := m.currentTask(); task != nil {
-			m.exportID = task.ID
+		tasks := m.selectedTasks()
+		if len(tasks) > 0 {
+			title := taskTitles(tasks)
+			m.exportID = tasks[0].ID
+			m.exportTitle = title
 			m.copyOnExit = true
-			return m, tea.Sequence(copyTaskCmd(task.Title), m.save("Saved"), tea.Quit)
+			return m, tea.Sequence(copyTaskCmd(title), m.save("Saved"), tea.Quit)
 		}
 	case "y":
-		if task := m.currentTask(); task != nil {
-			return m, copyTaskCmd(task.Title)
+		tasks := m.selectedTasks()
+		if len(tasks) > 0 {
+			return m, copyTaskCmd(taskTitles(tasks))
 		}
 	case "up", "k":
+		m.clearTaskSelection()
 		if m.focus == paneSidebar {
 			m.moveSidebar(-1)
 		} else {
 			m.moveTask(-1)
 		}
 	case "down", "j":
+		m.clearTaskSelection()
 		if m.focus == paneSidebar {
 			m.moveSidebar(1)
 		} else {
 			m.moveTask(1)
 		}
+	case "ctrl+up":
+		if m.focus == paneTasks {
+			m.extendTaskSelection(-1)
+		}
+	case "ctrl+down":
+		if m.focus == paneTasks {
+			m.extendTaskSelection(1)
+		}
 	case "left", "h":
+		m.clearTaskSelection()
 		m.focus = paneSidebar
 	case "right", "l":
 		m.focus = paneTasks
@@ -216,6 +241,10 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n":
 		m.startInput("new", "New task", "")
 	case "e", "enter":
+		if len(m.selectedTasks()) > 1 {
+			m.flash("Cannot edit multiple tasks")
+			break
+		}
 		if task := m.currentTask(); task != nil {
 			m.editing = true
 			m.editTaskID = task.ID
@@ -248,6 +277,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.startInput("labels", "Labels", strings.Join(task.Labels, ", "))
 		}
 	case "/":
+		m.clearTaskSelection()
 		m.startInput("search", "Search", "")
 	case "c":
 		m.search = ""
@@ -619,7 +649,7 @@ func (m model) View() string {
 	} else if m.editing {
 		b.WriteString(m.editBar(bodyWidth))
 	} else {
-		b.WriteString(mutedStyle.Render("left/right side  up/down move  tab side  n add  e edit  y copy  w export  W copy+quit  x done  / search  D delete  q quit"))
+		b.WriteString(mutedStyle.Render("left/right side  up/down move  ctrl+up/down select  tab side  n add  e edit  y copy  w export  W copy+quit  x done  / search  D delete  q quit"))
 		if m.search != "" {
 			b.WriteString(accentStyle.Render("  search: " + m.search))
 		}
@@ -747,6 +777,23 @@ func (m *model) moveTask(delta int) {
 	m.clampSelection()
 }
 
+func (m *model) extendTaskSelection(delta int) {
+	m.clampSelection()
+	if len(m.taskIDs) == 0 {
+		m.clearTaskSelection()
+		return
+	}
+	if m.selectFrom < 0 {
+		m.selectFrom = m.selected
+	}
+	m.selected += delta
+	m.clampSelection()
+}
+
+func (m *model) clearTaskSelection() {
+	m.selectFrom = -1
+}
+
 func (m *model) moveSidebar(delta int) {
 	views := m.views()
 	m.sidebar += delta
@@ -758,6 +805,7 @@ func (m *model) moveSidebar(delta int) {
 	}
 	m.view = views[m.sidebar]
 	m.selected = 0
+	m.clearTaskSelection()
 }
 
 func (m *model) toggleFocus() {
@@ -766,6 +814,7 @@ func (m *model) toggleFocus() {
 		return
 	}
 	m.focus = paneSidebar
+	m.clearTaskSelection()
 }
 
 func (m *model) moveEditField(delta int) {
@@ -810,6 +859,7 @@ func (m *model) clampSelection() {
 	m.refreshTaskIDs()
 	if len(m.taskIDs) == 0 {
 		m.selected = 0
+		m.clearTaskSelection()
 		return
 	}
 	if m.selected < 0 {
@@ -817,6 +867,9 @@ func (m *model) clampSelection() {
 	}
 	if m.selected >= len(m.taskIDs) {
 		m.selected = len(m.taskIDs) - 1
+	}
+	if m.selectFrom >= len(m.taskIDs) {
+		m.selectFrom = len(m.taskIDs) - 1
 	}
 }
 
@@ -843,6 +896,35 @@ func (m *model) currentTask() *todo.Task {
 		return nil
 	}
 	return task
+}
+
+func (m *model) selectedTasks() []todo.Task {
+	tasks := m.refreshTaskIDs()
+	if len(tasks) == 0 {
+		return nil
+	}
+	start, end := m.selectionBounds()
+	if start < 0 || end < 0 {
+		return nil
+	}
+	out := make([]todo.Task, 0, end-start+1)
+	for i := start; i <= end && i < len(tasks); i++ {
+		out = append(out, tasks[i])
+	}
+	return out
+}
+
+func (m model) selectionBounds() (int, int) {
+	if len(m.taskIDs) == 0 {
+		return -1, -1
+	}
+	start := m.selected
+	end := m.selected
+	if m.selectFrom >= 0 {
+		start = min(m.selectFrom, m.selected)
+		end = max(m.selectFrom, m.selected)
+	}
+	return start, end
 }
 
 func (m *model) targetTask() *todo.Task {
@@ -915,6 +997,9 @@ func (m model) headerRow(tasks []todo.Task) string {
 		}
 	}
 	title := fmt.Sprintf("%d tasks", len(tasks))
+	if selected := len(m.selectedTasks()); selected > 1 {
+		title = fmt.Sprintf("%d selected", selected)
+	}
 	if m.focus == paneTasks {
 		title = sectionStyle.Render(title)
 	} else {
@@ -926,6 +1011,9 @@ func (m model) headerRow(tasks []todo.Task) string {
 func (m model) taskListLines(tasks []todo.Task, width int, visible int) []string {
 	if visible <= 0 {
 		return nil
+	}
+	if m.selectFrom >= 0 {
+		return m.selectedTaskRangeBox(tasks, width, visible)
 	}
 	taskStart := scrollStart(m.selected, max(1, visible-4), len(tasks))
 	lines := make([]string, 0, visible)
@@ -939,9 +1027,58 @@ func (m model) taskListLines(tasks []todo.Task, width int, visible int) []string
 			}
 			continue
 		}
+		line := m.taskRow(i, tasks[i], width)
+		if m.taskIndexSelected(i) {
+			line = inactiveSelectedStyle.Render(pad(line, width))
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func (m model) selectedTaskRangeBox(tasks []todo.Task, width int, visible int) []string {
+	if width < 8 {
+		return nil
+	}
+	start, end := m.selectionBounds()
+	if start < 0 || end < 0 || start >= len(tasks) {
+		return nil
+	}
+	if end >= len(tasks) {
+		end = len(tasks) - 1
+	}
+	taskStart := scrollStart(m.selected, max(1, visible-2), len(tasks))
+	if start < taskStart {
+		taskStart = start
+	}
+	style := selectedBorderStyle
+	if m.focus != paneTasks || m.editing {
+		style = inactiveBorderStyle
+	}
+	lines := make([]string, 0, visible)
+	for i := taskStart; i < len(tasks) && len(lines) < visible; i++ {
+		if i == start {
+			lines = append(lines, style.Render("+"+strings.Repeat("-", width-2)+"+"))
+		}
+		if i >= start && i <= end {
+			row := m.taskRow(i, tasks[i], width-4)
+			lines = append(lines, style.Render("| ")+pad(row, width-4)+style.Render(" |"))
+			if i == end && len(lines) < visible {
+				lines = append(lines, style.Render("+"+strings.Repeat("-", width-2)+"+"))
+			}
+			continue
+		}
 		lines = append(lines, m.taskRow(i, tasks[i], width))
 	}
 	return lines
+}
+
+func (m model) taskIndexSelected(index int) bool {
+	if m.selectFrom < 0 {
+		return false
+	}
+	start, end := m.selectionBounds()
+	return index >= start && index <= end
 }
 
 func (m model) selectedTaskBox(index int, task todo.Task, width int) []string {
@@ -1048,6 +1185,21 @@ func taskEditText(task todo.Task) string {
 		parts = append(parts, "@"+label)
 	}
 	return strings.Join(parts, " ")
+}
+
+func taskTitles(tasks []todo.Task) string {
+	parts := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		parts = append(parts, task.Title)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func (m model) exportCount() int {
+	if m.exportTitle == "" {
+		return 1
+	}
+	return strings.Count(m.exportTitle, "\n") + 1
 }
 
 func (m model) editBar(width int) string {

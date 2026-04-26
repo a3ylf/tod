@@ -37,6 +37,7 @@ If `XDG_DATA_HOME` is not set, the app uses:
 ```text
 left/right     switch between sidebar and tasks
 up/down        move within the focused side
+ctrl+up/down   select multiple tasks in the task list
 tab            switch focused side
 n              add task
 e or enter     edit the selected task as text
@@ -84,8 +85,13 @@ play the game of life
 
 Press `y` to copy the selected task text to the terminal clipboard without
 leaving the TUI. Press `W` to copy the selected task text, quit, and print
-`Copied task: <task>`. Clipboard copy uses `clip.exe` on WSL/Windows when
-available, then falls back to OSC52 for terminals that support it.
+`Copied task: <task>` or `Copied tasks: <tasks>`. Clipboard copy uses
+`clip.exe` on WSL/Windows when available, then falls back to OSC52 for terminals
+that support it.
+
+Use ctrl-up/ctrl-down in the task list to select a contiguous range. `y`, `w`,
+and `W` use all selected tasks joined with newlines. Editing is disabled while
+multiple tasks are selected.
 
 ## Planning
 
