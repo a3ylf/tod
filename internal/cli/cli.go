@@ -46,8 +46,8 @@ func Run(name string, args []string, stdout, stderr io.Writer) error {
 }
 
 func handleExportedTask(stdout io.Writer, exported *tui.ExportedTask) error {
-	if exported.RunPlan {
-		return runPlan(exported.ID)
+	if exported.Copied {
+		return nil
 	}
 	fmt.Fprintln(stdout, exported.Title)
 	return nil

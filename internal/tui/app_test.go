@@ -344,12 +344,12 @@ func TestWExportsSelectedTask(t *testing.T) {
 	if m.exportID != 7 {
 		t.Fatalf("exportID = %d, want 7", m.exportID)
 	}
-	if m.exportPlan {
-		t.Fatal("exportPlan = true, want false")
+	if m.copyOnExit {
+		t.Fatal("copyOnExit = true, want false")
 	}
 }
 
-func TestShiftWExportsSelectedTaskForPlan(t *testing.T) {
+func TestShiftWCopiesSelectedTaskAndQuits(t *testing.T) {
 	m := model{
 		store: todo.Store{
 			NextID: 2,
@@ -363,8 +363,27 @@ func TestShiftWExportsSelectedTaskForPlan(t *testing.T) {
 	if m.exportID != 7 {
 		t.Fatalf("exportID = %d, want 7", m.exportID)
 	}
-	if !m.exportPlan {
-		t.Fatal("exportPlan = false, want true")
+	if !m.copyOnExit {
+		t.Fatal("copyOnExit = false, want true")
+	}
+}
+
+func TestYCopiesSelectedTaskWithoutQuitting(t *testing.T) {
+	m := model{
+		store: todo.Store{
+			NextID: 2,
+			Tasks:  []todo.Task{{ID: 7, Title: "write prompt", Project: "Inbox", Priority: 4}},
+		},
+		view:  "Inbox",
+		focus: paneTasks,
+	}
+	updated, cmd := m.updateNormal(key("y"))
+	m = updated.(model)
+	if m.exportID != 0 {
+		t.Fatalf("exportID = %d, want 0", m.exportID)
+	}
+	if cmd == nil {
+		t.Fatal("copy command is nil")
 	}
 }
 

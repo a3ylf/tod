@@ -39,9 +39,10 @@ left/right     switch between sidebar and tasks
 up/down        move within the focused side
 tab            switch focused side
 n              add task
-e or enter     open edit mode for the selected task
-w              close and print selected task id + title
-W              close and run plan mode for selected task
+e or enter     edit the selected task as text
+y              copy selected task text to clipboard
+w              close and print selected task text
+W              copy selected task text to clipboard and quit
 x or space     toggle complete
 d              set due date
 p              cycle priority p4 -> p3 -> p2 -> p1
@@ -50,6 +51,7 @@ L              edit labels
 /              search
 c              clear search
 D              delete, press twice
+ctrl+z or u    undo last task change
 q              save and quit
 ```
 
@@ -64,19 +66,27 @@ play the game of life tomorrow p3 #Work @home
 creates a task named `play the game of life` due tomorrow with priority `p3`,
 project `Work`, and label `home`.
 
-In edit mode, use left/right to pick a field, enter to change it, `p` to cycle
-priority, `x` to toggle completion, and esc or `e` to close the editor.
+Edit mode opens the whole task as one text buffer. Use inline tokens like
+`p3`, `2026-04-25`, `#Work`, and `@home`; removing a token clears that field.
+Enter applies the edit, esc cancels, and up/down exits edit mode. While editing,
+left/right move by character, alt-left/alt-right move by word, delete removes one
+character forward, alt-delete or alt-d deletes one word forward, ctrl-w deletes
+one word backward, ctrl-u clears before the cursor, ctrl-k clears after the
+cursor, and ctrl-z or `u` walks back through text edits.
 
-## Planning
+## Exporting
 
 Press `w` to close the TUI and print the selected task:
 
 ```text
-12	play the game of life
+play the game of life
 ```
 
-Press `W` to close the TUI and generate the Codex kickoff plan for the selected
-task directly.
+Press `y` to copy the selected task text to the terminal clipboard without
+leaving the TUI. Press `W` to copy the selected task text and quit. Clipboard
+copy uses OSC52, so terminal support must be enabled.
+
+## Planning
 
 Generate a Codex kickoff prompt for a task:
 

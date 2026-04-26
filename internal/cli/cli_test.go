@@ -34,3 +34,14 @@ func TestHandleExportedTaskPrintsTitleOnly(t *testing.T) {
 		t.Fatalf("stdout = %q, want title only", got)
 	}
 }
+
+func TestHandleCopiedExportedTaskDoesNotPrint(t *testing.T) {
+	var stdout bytes.Buffer
+	err := handleExportedTask(&stdout, &tui.ExportedTask{ID: 42, Title: "write docs", Copied: true})
+	if err != nil {
+		t.Fatalf("handleExportedTask returned error: %v", err)
+	}
+	if got := stdout.String(); got != "" {
+		t.Fatalf("stdout = %q, want empty", got)
+	}
+}

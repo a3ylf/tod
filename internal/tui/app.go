@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	osc52 "github.com/aymanbagabas/go-osc52/v2"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -32,14 +33,14 @@ type model struct {
 	messageAt  time.Time
 	confirmDel bool
 	exportID   int
-	exportPlan bool
+	copyOnExit bool
 	undoStore  *todo.Store
 }
 
 type ExportedTask struct {
-	ID      int
-	Title   string
-	RunPlan bool
+	ID     int
+	Title  string
+	Copied bool
 }
 
 type pane int
@@ -103,7 +104,7 @@ func Run() (*ExportedTask, error) {
 	if !ok {
 		return nil, nil
 	}
-	return &ExportedTask{ID: task.ID, Title: task.Title, RunPlan: finished.exportPlan}, nil
+	return &ExportedTask{ID: task.ID, Title: task.Title, Copied: finished.copyOnExit}, nil
 }
 
 func initialModel(store todo.Store, path string) model {
@@ -175,8 +176,13 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "W":
 		if task := m.currentTask(); task != nil {
 			m.exportID = task.ID
-			m.exportPlan = true
-			return m, tea.Sequence(m.save("Saved"), tea.Quit)
+			m.copyOnExit = true
+			return m, tea.Sequence(copyTaskCmd(task.Title), m.save("Saved"), tea.Quit)
+		}
+	case "y":
+		if task := m.currentTask(); task != nil {
+			m.flash("Copied")
+			return m, copyTaskCmd(task.Title)
 		}
 	case "up", "k":
 		if m.focus == paneSidebar {
@@ -249,7 +255,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.save("Task deleted")
 		}
 	case "?":
-		m.startInput("help", "Keys: left/right side, up/down move, n add, e edit, w export, W plan, x done, / search, D delete, q quit", "")
+		m.startInput("help", "Keys: left/right side, up/down move, n add, e edit, w export, W copy+quit, y copy, x done, / search, D delete, q quit", "")
 	}
 	m.clampSelection()
 	return m, nil
@@ -602,7 +608,7 @@ func (m model) View() string {
 	} else if m.editing {
 		b.WriteString(m.editBar(bodyWidth))
 	} else {
-		b.WriteString(mutedStyle.Render("left/right side  up/down move  tab side  n add  e edit  w export  W plan  x done  / search  D delete  q quit"))
+		b.WriteString(mutedStyle.Render("left/right side  up/down move  tab side  n add  e edit  y copy  w export  W copy+quit  x done  / search  D delete  q quit"))
 		if m.search != "" {
 			b.WriteString(accentStyle.Render("  search: " + m.search))
 		}
@@ -692,6 +698,13 @@ func (m model) save(message string) tea.Cmd {
 	path := m.path
 	return func() tea.Msg {
 		return savedMsg{text: message, err: todo.Save(path, store)}
+	}
+}
+
+func copyTaskCmd(text string) tea.Cmd {
+	return func() tea.Msg {
+		fmt.Print(osc52.New(text).String())
+		return nil
 	}
 }
 
