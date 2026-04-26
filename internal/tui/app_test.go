@@ -4,8 +4,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"todos/internal/todo"
@@ -61,8 +63,8 @@ func TestPaneNavigation(t *testing.T) {
 	}
 	updated, _ = m.updateNormal(key("down"))
 	m = updated.(model)
-	if m.view != "Upcoming" {
-		t.Fatalf("sidebar down view = %q, want Upcoming", m.view)
+	if m.view != "#Work" {
+		t.Fatalf("sidebar down view = %q, want #Work", m.view)
 	}
 	updated, _ = m.updateNormal(key("right"))
 	m = updated.(model)
@@ -72,23 +74,28 @@ func TestPaneNavigation(t *testing.T) {
 }
 
 func TestInitialModelStartsOnViews(t *testing.T) {
-	m := initialModel(todo.Store{}, "/tmp/tasks.json")
+	today := time.Now().Format("2006-01-02")
+	m := initialModel(todo.Store{Tasks: []todo.Task{{ID: 1, Title: "due", Project: "Inbox", Due: today, Priority: 4}}}, "/tmp/tasks.json")
 	if m.view != "Today" || m.focus != paneSidebar {
 		t.Fatalf("initial state = (%q, %v), want Today with views focus", m.view, m.focus)
 	}
 }
 
-func TestViewsStartWithTodayAndHideInbox(t *testing.T) {
+func TestViewsStartWithTodayHideInboxAndZeroCounts(t *testing.T) {
+	today := time.Now().Format("2006-01-02")
 	m := model{
-		store: todo.Store{Tasks: []todo.Task{{ID: 1, Title: "one", Project: "Inbox", Priority: 4}}},
+		store: todo.Store{Tasks: []todo.Task{
+			{ID: 1, Title: "due", Project: "Inbox", Due: today, Priority: 4},
+			{ID: 2, Title: "plain", Project: "Inbox", Priority: 4},
+		}},
 	}
 	views := m.views()
 	if len(views) == 0 || views[0] != "Today" {
 		t.Fatalf("views = %v, want Today first", views)
 	}
 	for _, view := range views {
-		if view == "Inbox" {
-			t.Fatalf("views = %v, want Inbox hidden", views)
+		if view == "Inbox" || view == "Upcoming" || view == "Completed" {
+			t.Fatalf("views = %v, want Inbox and zero-count views hidden", views)
 		}
 	}
 }
@@ -179,6 +186,18 @@ func TestInputEditingUsesCursor(t *testing.T) {
 	}
 }
 
+func TestInputSpaceInsertsAndMovesCursor(t *testing.T) {
+	m := model{input: inputState{active: true, kind: "new", title: "New task", value: "ab", cursor: 1, selectStart: -1}}
+	updated, _ := m.updateInput(key("space"))
+	m = updated.(model)
+	if m.input.value != "a b" || m.input.cursor != 2 {
+		t.Fatalf("input after space = (%q, %d), want a b at 2", m.input.value, m.input.cursor)
+	}
+	if view := m.inputView(80); !strings.Contains(view, "a b") {
+		t.Fatalf("inputView = %q, want visible inserted space", view)
+	}
+}
+
 func TestUndoRestoresPreviousInputEdit(t *testing.T) {
 	m := model{input: inputState{active: true, kind: "edit", title: "Edit", value: "abcd", cursor: 2}}
 	updated, _ := m.updateInput(key("X"))
@@ -235,11 +254,33 @@ func TestMouseSelectionCanBeDeletedInEditInput(t *testing.T) {
 	}
 }
 
-func TestEditInputViewColorsTokens(t *testing.T) {
+func TestNewAndEditInputColorTokens(t *testing.T) {
 	styles := inputTokenStyles("task p3 2026-04-25 #Work @focus")
 	for _, index := range []int{5, 8, 19, 25} {
 		if _, ok := styles[index]; !ok {
 			t.Fatalf("token styles missing index %d: %#v", index, styles)
+		}
+	}
+	projectStyle, _ := inputTokenStyle("#Work")
+	labelStyle, _ := inputTokenStyle("@focus")
+	dateStyle, _ := inputTokenStyle("2026-04-25")
+	priorityInputStyle, _ := inputTokenStyle("p3")
+	if projectStyle.GetForeground() == labelStyle.GetForeground() || projectStyle.GetForeground() == dateStyle.GetForeground() || labelStyle.GetForeground() == dateStyle.GetForeground() {
+		t.Fatalf("project, label, and date input colors should be distinct")
+	}
+	if projectStyle.GetForeground() != projectInputStyle.GetForeground() {
+		t.Fatalf("project input foreground = %v, want task project foreground %v", projectStyle.GetForeground(), projectInputStyle.GetForeground())
+	}
+	if labelStyle.GetForeground() != labelInputStyle.GetForeground() {
+		t.Fatalf("label input foreground = %v, want task label foreground %v", labelStyle.GetForeground(), labelInputStyle.GetForeground())
+	}
+	if priorityInputStyle.GetForeground() != priorityStyle(3).GetForeground() {
+		t.Fatalf("priority input foreground = %v, want task priority foreground %v", priorityInputStyle.GetForeground(), priorityStyle(3).GetForeground())
+	}
+	for _, kind := range []string{"new", "edit"} {
+		m := model{input: inputState{active: true, kind: kind, title: "Input", value: "task p3 #Work", cursor: len("task p3 #Work"), selectStart: -1}}
+		if !m.inputTokenColorEnabled() {
+			t.Fatalf("inputTokenColorEnabled false for %s", kind)
 		}
 	}
 }
@@ -558,6 +599,56 @@ func TestSelectedTaskBoxKeepsMetadataInlineWhenItFits(t *testing.T) {
 	}
 }
 
+func TestSelectedTaskBoxBorderUsesPriorityColor(t *testing.T) {
+	m := model{selected: 0, focus: paneTasks}
+	task := todo.Task{ID: 1, Title: "urgent", Project: "Inbox", Priority: 1}
+	got := m.singleTaskBorderStyle(task).GetForeground()
+	want := priorityStyle(1).GetForeground()
+	if got != want {
+		t.Fatalf("border foreground = %v, want %v", got, want)
+	}
+}
+
+func TestMultiSelectionUsesDedicatedBorderColor(t *testing.T) {
+	m := model{selected: 1, selectFrom: 0, focus: paneTasks}
+	got := m.multiTaskBorderStyle().GetForeground()
+	want := selectedBorderStyle.GetForeground()
+	if got != want {
+		t.Fatalf("multi border foreground = %v, want %v", got, want)
+	}
+}
+
+func TestDueBadgeRelativeColors(t *testing.T) {
+	now := time.Date(2026, 4, 26, 12, 0, 0, 0, time.Local)
+	tests := []struct {
+		name  string
+		due   string
+		label string
+		style lipgloss.Style
+	}{
+		{name: "past", due: "2026-04-25", label: "2026-04-25", style: warnStyle},
+		{name: "today", due: "2026-04-26", label: "today", style: todayDateStyle},
+		{name: "tomorrow", due: "2026-04-27", label: "tomorrow", style: dateInputStyle},
+		{name: "future", due: "2026-04-28", label: "2026-04-28", style: futureDateStyle},
+	}
+	for _, tt := range tests {
+		task := todo.Task{Due: tt.due}
+		if got := dueBadgeAt(task, true, now); got != tt.label {
+			t.Fatalf("%s plain badge = %q, want %q", tt.name, got, tt.label)
+		}
+		if got, want := dueStyleAt(startOfDay(now), now).GetForeground(), todayDateStyle.GetForeground(); got != want {
+			t.Fatalf("today foreground = %v, want %v", got, want)
+		}
+		d, ok := task.DueTimeAt(now)
+		if !ok {
+			t.Fatalf("%s due did not parse", tt.name)
+		}
+		if got, want := dueStyleAt(d, now).GetForeground(), tt.style.GetForeground(); got != want {
+			t.Fatalf("%s foreground = %v, want %v", tt.name, got, want)
+		}
+	}
+}
+
 func TestInputViewWrapsLongEditText(t *testing.T) {
 	m := model{
 		input: inputState{
@@ -594,6 +685,8 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyBackspace}
 	case "delete":
 		return tea.KeyMsg{Type: tea.KeyDelete}
+	case "space":
+		return tea.KeyMsg{Type: tea.KeySpace}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }

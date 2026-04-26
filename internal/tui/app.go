@@ -78,16 +78,29 @@ var (
 	sectionStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
 	mutedStyle            = lipgloss.NewStyle().Faint(true)
 	accentStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	projectInputStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
+	labelInputStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true)
+	dateInputStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
+	todayDateStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
+	futureDateStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
 	warnStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
 	selectedStyle         = lipgloss.NewStyle().Background(lipgloss.Color("9")).Foreground(lipgloss.Color("15")).Bold(true)
 	inactiveSelectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
 	selectedBorderStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+	multiBorderStyle      = selectedBorderStyle
 	inactiveBorderStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	borderStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	chipStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8")).Padding(0, 1)
 	activeChipStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("9")).Bold(true).Padding(0, 1)
 	cursorStyle           = lipgloss.NewStyle().Reverse(true)
 )
+
+var priorityStyles = map[int]lipgloss.Style{
+	1: lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true),
+	2: lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true),
+	3: lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true),
+	4: mutedStyle,
+}
 
 func Run() (*ExportedTask, error) {
 	path, err := todo.DefaultPath()
@@ -122,10 +135,14 @@ func Run() (*ExportedTask, error) {
 }
 
 func initialModel(store todo.Store, path string) model {
+	view := "All"
+	if views := visibleViews(store.Tasks); len(views) > 0 {
+		view = views[0]
+	}
 	return model{
 		store:      store,
 		path:       path,
-		view:       "Today",
+		view:       view,
 		focus:      paneSidebar,
 		selectFrom: -1,
 		width:      100,
@@ -409,6 +426,10 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+k":
 		m.checkpointInput()
 		m.deleteInputAfterCursor()
+		m.syncLiveInput()
+	case " ":
+		m.checkpointInput()
+		m.insertInputText(" ")
 		m.syncLiveInput()
 	default:
 		if len(msg.Runes) > 0 {
@@ -764,7 +785,7 @@ func (m model) renderInputSegment(segment string, offset int) string {
 	for i, r := range runes {
 		index := offset + i
 		rendered := string(r)
-		if style, ok := tokenStyles[index]; ok && m.input.kind == "edit" {
+		if style, ok := tokenStyles[index]; ok && m.inputTokenColorEnabled() {
 			rendered = style.Render(rendered)
 		}
 		if hasSelection && index >= start && index < end {
@@ -775,6 +796,10 @@ func (m model) renderInputSegment(segment string, offset int) string {
 		b.WriteString(rendered)
 	}
 	return b.String()
+}
+
+func (m model) inputTokenColorEnabled() bool {
+	return m.input.kind == "edit" || m.input.kind == "new"
 }
 
 func (m model) inputLayout() (top int, height int, available int) {
@@ -1049,14 +1074,27 @@ func (m *model) selectID(id int) {
 }
 
 func (m model) views() []string {
-	views := []string{"Today", "Upcoming", "All", "Completed"}
-	for _, project := range todo.Projects(m.store.Tasks) {
-		if project != "Inbox" {
+	return visibleViews(m.store.Tasks)
+}
+
+func visibleViews(tasks []todo.Task) []string {
+	var views []string
+	for _, view := range []string{"Today", "Upcoming", "All", "Completed"} {
+		if len(todo.Filter(tasks, view, "", time.Now())) > 0 {
+			views = append(views, view)
+		}
+	}
+	for _, project := range todo.Projects(tasks) {
+		view := "#" + project
+		if project != "Inbox" && len(todo.Filter(tasks, view, "", time.Now())) > 0 {
 			views = append(views, "#"+project)
 		}
 	}
-	for _, label := range todo.Labels(m.store.Tasks) {
-		views = append(views, "@"+label)
+	for _, label := range todo.Labels(tasks) {
+		view := "@" + label
+		if len(todo.Filter(tasks, view, "", time.Now())) > 0 {
+			views = append(views, view)
+		}
 	}
 	return views
 }
@@ -1144,10 +1182,7 @@ func (m model) selectedTaskRangeBox(tasks []todo.Task, width int, visible int) [
 	if start < taskStart {
 		taskStart = start
 	}
-	style := selectedBorderStyle
-	if m.focus != paneTasks || m.editing {
-		style = inactiveBorderStyle
-	}
+	style := m.multiTaskBorderStyle()
 	lines := make([]string, 0, visible)
 	for i := taskStart; i < len(tasks) && len(lines) < visible; i++ {
 		if i == start {
@@ -1178,10 +1213,7 @@ func (m model) selectedTaskBox(index int, task todo.Task, width int) []string {
 	if width < 8 {
 		return []string{m.taskRow(index, task, width)}
 	}
-	style := selectedBorderStyle
-	if m.focus != paneTasks || m.editing {
-		style = inactiveBorderStyle
-	}
+	style := m.singleTaskBorderStyle(task)
 	top := style.Render("+" + strings.Repeat("-", width-2) + "+")
 	content := m.taskBoxContent(index, task, width-4)
 	middle := make([]string, 0, len(content))
@@ -1190,6 +1222,20 @@ func (m model) selectedTaskBox(index int, task todo.Task, width int) []string {
 	}
 	bottom := style.Render("+" + strings.Repeat("-", width-2) + "+")
 	return append(append([]string{top}, middle...), bottom)
+}
+
+func (m model) singleTaskBorderStyle(task todo.Task) lipgloss.Style {
+	if m.focus != paneTasks || m.editing {
+		return inactiveBorderStyle
+	}
+	return priorityStyle(task.Priority)
+}
+
+func (m model) multiTaskBorderStyle() lipgloss.Style {
+	if m.focus != paneTasks || m.editing {
+		return inactiveBorderStyle
+	}
+	return multiBorderStyle
 }
 
 func (m model) taskBoxContent(index int, task todo.Task, width int) []string {
@@ -1322,16 +1368,24 @@ func inputTokenStyles(value string) map[int]lipgloss.Style {
 func inputTokenStyle(token string) (lipgloss.Style, bool) {
 	switch {
 	case isPriorityToken(token):
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true), true
+		return priorityStyle(int(token[1] - '0')), true
 	case strings.HasPrefix(token, "#") && len(token) > 1:
-		return accentStyle, true
+		return projectInputStyle, true
 	case strings.HasPrefix(token, "@") && len(token) > 1:
-		return mutedStyle, true
+		return labelInputStyle, true
 	case isDateToken(token):
-		return warnStyle, true
+		return dateTokenStyle(token, time.Now()), true
 	default:
 		return lipgloss.Style{}, false
 	}
+}
+
+func dateTokenStyle(token string, now time.Time) lipgloss.Style {
+	d, err := todo.ParseDue(token, now)
+	if err != nil || d.IsZero() {
+		return dateInputStyle
+	}
+	return dueStyleAt(d, now)
 }
 
 func isPriorityToken(token string) bool {
@@ -1398,35 +1452,55 @@ func (m model) editBar(width int) string {
 }
 
 func dueBadge(task todo.Task, plain bool) string {
+	return dueBadgeAt(task, plain, time.Now())
+}
+
+func dueBadgeAt(task todo.Task, plain bool, now time.Time) string {
 	if task.Due == "" {
 		if plain {
 			return "no due"
 		}
 		return mutedStyle.Render("no due")
 	}
-	d, ok := task.DueTime()
+	d, ok := task.DueTimeAt(now)
 	if !ok {
 		return task.Due
 	}
-	today := time.Now()
-	y, month, day := today.Date()
-	start := time.Date(y, month, day, 0, 0, 0, 0, today.Location())
+	label := task.Due
+	start := startOfDay(now)
 	switch {
 	case d.Before(start):
-		if plain {
-			return task.Due
-		}
-		return warnStyle.Render(task.Due)
+		label = task.Due
 	case d.Equal(start):
-		if plain {
-			return "today"
-		}
-		return accentStyle.Render("today")
+		label = "today"
 	case d.Equal(start.AddDate(0, 0, 1)):
-		return "tomorrow"
+		label = "tomorrow"
 	default:
-		return task.Due
+		label = task.Due
 	}
+	if plain {
+		return label
+	}
+	return dueStyleAt(d, now).Render(label)
+}
+
+func dueStyleAt(d time.Time, now time.Time) lipgloss.Style {
+	start := startOfDay(now)
+	switch {
+	case d.Before(start):
+		return warnStyle
+	case d.Equal(start):
+		return todayDateStyle
+	case d.Equal(start.AddDate(0, 0, 1)):
+		return dateInputStyle
+	default:
+		return futureDateStyle
+	}
+}
+
+func startOfDay(t time.Time) time.Time {
+	y, month, day := t.Date()
+	return time.Date(y, month, day, 0, 0, 0, 0, t.Location())
 }
 
 func priorityBadge(priority int, plain bool) string {
@@ -1434,16 +1508,24 @@ func priorityBadge(priority int, plain bool) string {
 	if plain {
 		return label
 	}
-	switch priority {
-	case 1:
-		return warnStyle.Render(label)
-	case 2:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true).Render(label)
-	case 3:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true).Render(label)
-	default:
-		return mutedStyle.Render(label)
+	return priorityStyle(priority).Render(label)
+}
+
+func priorityStyle(priority int) lipgloss.Style {
+	if style, ok := priorityStyles[priority]; ok {
+		return style
 	}
+	return mutedStyle
+}
+
+func highestPriority(tasks []todo.Task) int {
+	priority := 4
+	for _, task := range tasks {
+		if task.Priority < priority {
+			priority = task.Priority
+		}
+	}
+	return priority
 }
 
 func projectBadge(project string) string {
@@ -1451,7 +1533,7 @@ func projectBadge(project string) string {
 		return ""
 	}
 	value := "#" + project
-	return accentStyle.Render(value)
+	return projectInputStyle.Render(value)
 }
 
 func labelsBadge(labels []string, plain bool) string {
@@ -1466,7 +1548,7 @@ func labelsBadge(labels []string, plain bool) string {
 	if plain {
 		return value
 	}
-	return mutedStyle.Render(value)
+	return labelInputStyle.Render(value)
 }
 
 func nonEmptyStrings(values ...string) []string {
@@ -1515,10 +1597,34 @@ func wrapText(s string, width int) []string {
 }
 
 func wrapTextPreserveWords(s string, width int) []string {
-	if strings.TrimSpace(s) == "" {
+	if s == "" {
 		return nil
 	}
-	return wrapText(s, width)
+	return wrapInputText(s, width)
+}
+
+func wrapInputText(s string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	runes := []rune(s)
+	if len(runes) == 0 {
+		return nil
+	}
+	var lines []string
+	lineStart := 0
+	lineWidth := 0
+	for i, r := range runes {
+		rw := ansi.StringWidth(string(r))
+		if lineWidth > 0 && lineWidth+rw > width {
+			lines = append(lines, string(runes[lineStart:i]))
+			lineStart = i
+			lineWidth = 0
+		}
+		lineWidth += rw
+	}
+	lines = append(lines, string(runes[lineStart:]))
+	return lines
 }
 
 func inputValueWithCursor(value string, cursor int) string {
@@ -1589,9 +1695,6 @@ func cursorIndexForInputPosition(value string, width int, line int, x int) int {
 	offset := 0
 	for i := 0; i < line; i++ {
 		offset += len([]rune(lines[i]))
-		if offset < len([]rune(value)) {
-			offset++
-		}
 	}
 	return min(len([]rune(value)), offset+cursorIndexForWidth(lines[line], x))
 }
