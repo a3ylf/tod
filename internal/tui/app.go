@@ -43,6 +43,7 @@ type model struct {
 	saveInFlight  bool
 	saveError     string
 	quitAfterSave bool
+	showHelp      bool
 }
 
 type ExportedTask struct {
@@ -116,9 +117,6 @@ func Run() (*ExportedTask, error) {
 	store, err := todo.Load(path)
 	if err != nil {
 		return nil, err
-	}
-	if len(store.Tasks) == 0 {
-		store.Add("Press n to add your first task", "Inbox")
 	}
 	m := initialModel(store, path)
 	final, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion()).Run()
@@ -205,6 +203,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.showHelp {
+		m.showHelp = false
+		return m, nil
+	}
 	if m.editing {
 		return m.updateEdit(msg)
 	}
@@ -334,7 +336,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.requestSave("Task deleted")
 		}
 	case "?":
-		m.startInput("help", "Keys: left/right side, up/down move, n add, e edit, w export, W copy+quit, y copy, x done, / search, D delete, q quit", "")
+		m.showHelp = true
 	case "r":
 		if m.saveError == "" {
 			m.flash("Nothing to retry")
@@ -717,43 +719,49 @@ func (m model) View() string {
 	if m.height <= 0 {
 		m.height = 30
 	}
+	if m.showHelp {
+		return m.helpView()
+	}
 	tasks := m.filteredTasks()
 	views := m.views()
-	sideWidth := 22
-	if m.width < 90 {
-		sideWidth = 18
+	showSidebar := m.width >= 64
+	sideWidth := 0
+	bodyWidth := m.width
+	if showSidebar {
+		sideWidth = min(22, max(14, m.width/4))
+		bodyWidth = m.width - sideWidth - 3
 	}
-	bodyWidth := m.width - sideWidth - 3
-	if bodyWidth < 40 {
-		bodyWidth = 40
-	}
-	contentRows := m.height - 6
-	if contentRows < 8 {
-		contentRows = 8
-	}
+	contentRows := max(1, m.height-5)
 
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("todos"))
 	b.WriteString(mutedStyle.Render("  " + m.view + "  "))
 	b.WriteString(m.focusLabel())
-	b.WriteString(mutedStyle.Render("  data: " + m.path))
+	if m.width >= 100 {
+		b.WriteString(mutedStyle.Render("  data: " + m.path))
+	}
 	b.WriteByte('\n')
 	b.WriteString(borderStyle.Render(strings.Repeat("-", max(1, m.width))))
 	b.WriteByte('\n')
 
 	taskLines := m.taskListLines(tasks, bodyWidth, max(1, contentRows-1))
 	for i := 0; i < contentRows; i++ {
-		left := ""
-		if i == 0 {
-			left = m.sidebarHeader(sideWidth)
-		} else if viewIndex := i - 1; viewIndex < len(views) {
-			left = m.sidebarRow(viewIndex, views[viewIndex], sideWidth)
-		}
 		right := ""
 		if i == 0 {
 			right = m.headerRow(tasks)
 		} else if lineIndex := i - 1; lineIndex < len(taskLines) {
 			right = taskLines[lineIndex]
+		}
+		if !showSidebar {
+			b.WriteString(pad(right, bodyWidth))
+			b.WriteByte('\n')
+			continue
+		}
+		left := ""
+		if i == 0 {
+			left = m.sidebarHeader(sideWidth)
+		} else if viewIndex := i - 1; viewIndex < len(views) {
+			left = m.sidebarRow(viewIndex, views[viewIndex], sideWidth)
 		}
 		b.WriteString(pad(left, sideWidth))
 		b.WriteString(borderStyle.Render(" | "))
@@ -766,11 +774,11 @@ func (m model) View() string {
 	if m.input.active {
 		b.WriteString(m.inputView(m.width))
 	} else if m.editing {
-		b.WriteString(m.editBar(bodyWidth))
+		b.WriteString(truncate(m.editBar(bodyWidth), m.width))
 	} else {
-		b.WriteString(mutedStyle.Render("left/right side  up/down move  ctrl+up/down select  tab side  n add  e edit  y copy  w export  W copy+quit  x done  / search  D delete  q quit"))
+		b.WriteString(mutedStyle.Render(truncate(m.footer(), m.width)))
 		if m.search != "" {
-			b.WriteString(accentStyle.Render("  search: " + m.search))
+			b.WriteString(accentStyle.Render(truncate("  search: "+m.search, max(0, m.width-ansi.StringWidth(m.footer())))))
 		}
 	}
 	if m.message != "" && time.Since(m.messageAt) < 4*time.Second {
@@ -784,11 +792,48 @@ func (m model) View() string {
 	return b.String()
 }
 
+func (m model) footer() string {
+	if m.focus == paneSidebar {
+		return "up/down views  tab tasks  n new  / search  ? help  q quit"
+	}
+	return "n new  e edit  x done  p priority  / search  y copy  D delete  ? help  q quit"
+}
+
+func (m model) helpView() string {
+	lines := []string{
+		"tod — keyboard help",
+		"Navigation  arrows/hjkl move · tab switch pane · ctrl+up/down select range",
+		"Tasks       n new · e/enter edit · x/space complete · p priority · d due",
+		"Metadata    P project · L labels · / search · c clear search",
+		"Selection   y copy · w export · W copy and quit · D twice delete",
+		"Safety      u/ctrl+z undo · r retry failed save · q save and quit",
+		"Editing     enter apply · esc cancel · alt arrows words · ctrl-w delete word",
+		"Task text   use p3, tomorrow, #Project, and @label inline",
+		"Press any key to close help",
+	}
+	limit := max(1, m.height)
+	var b strings.Builder
+	for index, line := range lines {
+		if index >= limit {
+			break
+		}
+		if index > 0 {
+			b.WriteByte('\n')
+		}
+		if index == 0 {
+			b.WriteString(titleStyle.Render(truncate(line, m.width)))
+		} else {
+			b.WriteString(truncate(line, m.width))
+		}
+	}
+	return b.String()
+}
+
 func (m model) inputView(width int) string {
 	prefix := m.input.title + ": "
 	available := width - ansi.StringWidth(prefix)
-	if available < 10 {
-		available = 10
+	if available < 1 {
+		available = 1
 	}
 	lines := wrapTextPreserveWords(m.input.value, available)
 	if len(lines) == 0 {
@@ -851,8 +896,8 @@ func (m model) inputLayout() (top int, height int, available int) {
 	top = contentRows + 3
 	prefixWidth := ansi.StringWidth(m.input.title + ": ")
 	available = width - prefixWidth
-	if available < 10 {
-		available = 10
+	if available < 1 {
+		available = 1
 	}
 	height = len(wrapTextPreserveWords(m.input.value, available))
 	if height == 0 {
@@ -1257,6 +1302,9 @@ func (m model) taskListLines(tasks []todo.Task, width int, visible int) []string
 	if visible <= 0 {
 		return nil
 	}
+	if len(tasks) == 0 {
+		return []string{m.emptyState(width)}
+	}
 	if m.selectFrom >= 0 {
 		return m.selectedTaskRangeBox(tasks, width, visible)
 	}
@@ -1279,6 +1327,16 @@ func (m model) taskListLines(tasks []todo.Task, width int, visible int) []string
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+func (m model) emptyState(width int) string {
+	message := "No tasks — n new"
+	if m.search != "" {
+		message = "No matching tasks — c clear search · n new"
+	} else if m.view != "All" && m.view != "Inbox" {
+		message = "No tasks in " + m.view + " — n new"
+	}
+	return mutedStyle.Render(truncate(message, width))
 }
 
 func (m model) selectedTaskRangeBox(tasks []todo.Task, width int, visible int) []string {

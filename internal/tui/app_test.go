@@ -192,6 +192,44 @@ func TestViewSeparatesHeaderFromContent(t *testing.T) {
 	}
 }
 
+func TestEmptyStoreShowsGuidanceWithoutCreatingTask(t *testing.T) {
+	m := initialModel(todo.NewStore(), "/tmp/tasks.json")
+	if len(m.store.Tasks) != 0 {
+		t.Fatalf("empty store contains %d tasks, want none", len(m.store.Tasks))
+	}
+	if got := m.View(); !strings.Contains(got, "No tasks") || !strings.Contains(got, "n new") {
+		t.Fatalf("empty view = %q, want actionable empty state", got)
+	}
+}
+
+func TestNarrowViewNeverExceedsTerminalWidth(t *testing.T) {
+	m := model{
+		store:  todo.Store{NextID: 2, Tasks: []todo.Task{{ID: 1, Title: "a very long task title with metadata", Project: "Work", Labels: []string{"focus"}, Priority: 2}}},
+		view:   "All",
+		focus:  paneTasks,
+		width:  40,
+		height: 10,
+	}
+	for _, line := range strings.Split(m.View(), "\n") {
+		if got := ansi.StringWidth(line); got > m.width {
+			t.Fatalf("line width = %d, want <= %d: %q", got, m.width, line)
+		}
+	}
+}
+
+func TestHelpOverlayIsReadableAtEightyColumns(t *testing.T) {
+	m := model{width: 80, height: 24, showHelp: true}
+	help := m.View()
+	if !strings.Contains(help, "Navigation") || !strings.Contains(help, "ctrl-w delete word") || !strings.Contains(help, "Press any key to close help") {
+		t.Fatalf("help = %q, want complete grouped shortcuts", help)
+	}
+	for _, line := range strings.Split(help, "\n") {
+		if got := ansi.StringWidth(line); got > 80 {
+			t.Fatalf("help line width = %d, want <= 80: %q", got, line)
+		}
+	}
+}
+
 func TestEditModeTargetsSelectedTask(t *testing.T) {
 	m := model{
 		store: todo.Store{
