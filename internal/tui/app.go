@@ -16,6 +16,7 @@ import (
 
 type model struct {
 	store       todo.Store
+	database    *todo.Database
 	path        string
 	view        string
 	focus       pane
@@ -102,22 +103,23 @@ var priorityStyles = map[int]lipgloss.Style{
 	4: mutedStyle,
 }
 
-func Run() (*ExportedTask, error) {
-	path, err := todo.DefaultPath()
-	if err != nil {
-		return nil, err
-	}
-	store, err := todo.Load(path)
+func Run(path string) (*ExportedTask, error) {
+	database, store, err := todo.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	if len(store.Tasks) == 0 {
 		store.Add("Press n to add your first task", "Inbox")
 	}
-	m := initialModel(store, path)
-	final, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion()).Run()
-	if err != nil {
-		return nil, err
+	m := initialModel(store, database.Path)
+	m.database = database
+	final, runErr := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion()).Run()
+	closeErr := database.Close()
+	if runErr != nil {
+		return nil, runErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
 	}
 	finished, ok := final.(model)
 	if !ok || finished.exportID == 0 {
@@ -855,7 +857,11 @@ func (m model) focusLabel() string {
 func (m model) save(message string) tea.Cmd {
 	store := m.store
 	path := m.path
+	database := m.database
 	return func() tea.Msg {
+		if database != nil {
+			return savedMsg{text: message, err: database.Save(store)}
+		}
 		return savedMsg{text: message, err: todo.Save(path, store)}
 	}
 }

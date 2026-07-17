@@ -14,23 +14,53 @@ Build a local binary:
 go build -o tod ./cmd/tod
 ```
 
+Build the Windows binary from Linux or WSL:
+
+```sh
+GOOS=windows GOARCH=amd64 go build -o tod.exe ./cmd/tod
+```
+
 Install the global `tod` command:
 
 ```sh
 go install ./cmd/tod
 ```
 
-Tasks are stored as JSON at:
+## Database setup
+
+Tasks are stored as JSON at a path configured for each environment. The path
+is selected in this order:
+
+1. `--db PATH`
+2. `TODOS_DB_PATH`
+3. the per-user config file
+4. an interactive first-run prompt
+
+The config file is stored at:
 
 ```text
-$XDG_DATA_HOME/todos/tasks.json
+Linux/WSL: ~/.config/todos/config.json
+Windows:   %APPDATA%\todos\config.json
 ```
 
-If `XDG_DATA_HOME` is not set, the app uses:
+On first launch, enter a path that both environments can access. For example,
+the same Windows file can be configured as:
 
 ```text
-~/.local/share/todos/tasks.json
+Windows: C:\Users\alex\AppData\Roaming\todos\tasks.json
+WSL:     /mnt/c/Users/alex/AppData/Roaming/todos/tasks.json
 ```
+
+You can also provide the path for one run:
+
+```sh
+tod --db /mnt/c/Users/alex/AppData/Roaming/todos/tasks.json
+```
+
+The database is exclusively locked while the TUI is open. A second instance
+using the same file exits with a database-in-use message. If the process is
+terminated unexpectedly, remove the matching `.lock` file manually after
+confirming that no `tod` instance is still running.
 
 ## Keys
 
