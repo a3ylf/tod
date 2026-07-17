@@ -61,10 +61,12 @@ func TestPaneNavigation(t *testing.T) {
 	if m.focus != paneSidebar {
 		t.Fatalf("left focus = %v, want sidebar", m.focus)
 	}
-	updated, _ = m.updateNormal(key("down"))
-	m = updated.(model)
+	for range 5 {
+		updated, _ = m.updateNormal(key("down"))
+		m = updated.(model)
+	}
 	if m.view != "#Work" {
-		t.Fatalf("sidebar down view = %q, want #Work", m.view)
+		t.Fatalf("sidebar view = %q, want #Work", m.view)
 	}
 	updated, _ = m.updateNormal(key("right"))
 	m = updated.(model)
@@ -81,7 +83,7 @@ func TestInitialModelStartsOnViews(t *testing.T) {
 	}
 }
 
-func TestViewsStartWithTodayHideInboxAndZeroCounts(t *testing.T) {
+func TestViewsKeepDurableNavigationAtZeroCounts(t *testing.T) {
 	today := time.Now().Format("2006-01-02")
 	m := model{
 		store: todo.Store{Tasks: []todo.Task{
@@ -93,10 +95,43 @@ func TestViewsStartWithTodayHideInboxAndZeroCounts(t *testing.T) {
 	if len(views) == 0 || views[0] != "Today" {
 		t.Fatalf("views = %v, want Today first", views)
 	}
-	for _, view := range views {
-		if view == "Inbox" || view == "Upcoming" || view == "Completed" {
-			t.Fatalf("views = %v, want Inbox and zero-count views hidden", views)
+	for _, want := range []string{"Today", "Upcoming", "All", "Completed", "Inbox"} {
+		if !containsView(views, want) {
+			t.Fatalf("views = %v, want durable %q view", views, want)
 		}
+	}
+}
+
+func TestMutationReconcilesRemovedLabelView(t *testing.T) {
+	m := model{
+		store: todo.Store{NextID: 2, Tasks: []todo.Task{{ID: 1, Title: "one", Project: "Inbox", Priority: 4, Labels: []string{"focus"}}}},
+		view:  "@focus",
+		focus: paneTasks,
+	}
+	updated, _ := m.updateNormal(key("D"))
+	m = updated.(model)
+	updated, _ = m.updateNormal(key("D"))
+	m = updated.(model)
+	if m.view != "All" || m.sidebar != viewPosition(m.views(), "All") {
+		t.Fatalf("deleted label view = (%q, sidebar %d), want All selected", m.view, m.sidebar)
+	}
+}
+
+func TestMutationKeepsTaskSelectedByIDAfterResort(t *testing.T) {
+	m := model{
+		store: todo.Store{NextID: 3, Tasks: []todo.Task{
+			{ID: 1, Title: "later", Project: "Inbox", Due: "2026-07-20", Priority: 4},
+			{ID: 2, Title: "soon", Project: "Inbox", Due: "2026-07-19", Priority: 4},
+		}},
+		view:     "All",
+		focus:    paneTasks,
+		selected: 1,
+	}
+	m.input = inputState{active: true, kind: "due", title: "Due", value: "2026-07-18"}
+	updated, _ := m.commitInput()
+	m = updated.(model)
+	if task := m.currentTask(); task == nil || task.ID != 1 {
+		t.Fatalf("selected task = %#v, want task ID 1 after resort", task)
 	}
 }
 

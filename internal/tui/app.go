@@ -203,7 +203,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.undoStore != nil {
 			m.store = *m.undoStore
 			m.undoStore = nil
-			m.clampSelection()
+			m.reconcile(0)
 			return m, m.save("Undone")
 		}
 		m.flash("Nothing to undo")
@@ -273,8 +273,10 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "x", " ":
 		if task := m.currentTask(); task != nil {
+			id := task.ID
 			m.checkpoint()
 			task.ToggleComplete()
+			m.reconcile(id)
 			return m, m.save("Task updated")
 		}
 	case "d":
@@ -283,8 +285,10 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "p":
 		if task := m.currentTask(); task != nil {
+			id := task.ID
 			m.checkpoint()
 			cyclePriority(task)
+			m.reconcile(id)
 			return m, m.save("Priority updated")
 		}
 	case "P":
@@ -311,7 +315,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.checkpoint()
 			m.store.Delete(task.ID)
 			m.confirmDel = false
-			m.clampSelection()
+			m.reconcile(0)
 			return m, m.save("Task deleted")
 		}
 	case "?":
@@ -341,15 +345,18 @@ func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.commitEditField()
 	case "x":
 		if task := m.editingTask(); task != nil {
+			id := task.ID
 			m.checkpoint()
 			task.ToggleComplete()
-			m.clampSelection()
+			m.reconcile(id)
 			return m, m.save("Task updated")
 		}
 	case "p":
 		if task := m.editingTask(); task != nil {
+			id := task.ID
 			m.checkpoint()
 			cyclePriority(task)
+			m.reconcile(id)
 			return m, m.save("Priority updated")
 		}
 	}
@@ -621,7 +628,7 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 		}
 		m.checkpoint()
 		id := m.store.Add(value, project)
-		m.selectID(id)
+		m.reconcile(id)
 		return m, m.save("Task added")
 	case "title":
 		if task := m.targetTask(); task != nil && value != "" {
@@ -629,6 +636,7 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 			if !todo.ApplyTaskText(task, value, time.Now()) {
 				return m, nil
 			}
+			m.reconcile(task.ID)
 			return m, m.save("Task updated")
 		}
 	case "edit":
@@ -639,7 +647,7 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 			}
 			m.editing = false
 			m.editTaskID = 0
-			m.clampSelection()
+			m.reconcile(task.ID)
 			return m, m.save("Task updated")
 		}
 	case "due":
@@ -651,6 +659,7 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 			}
 			m.checkpoint()
 			task.Due = due
+			m.reconcile(task.ID)
 			return m, m.save("Due date updated")
 		}
 	case "project":
@@ -661,12 +670,14 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 			}
 			m.checkpoint()
 			task.Project = project
+			m.reconcile(task.ID)
 			return m, m.save("Project updated")
 		}
 	case "labels":
 		if task := m.targetTask(); task != nil {
 			m.checkpoint()
 			task.Labels = todo.CleanLabels(value)
+			m.reconcile(task.ID)
 			return m, m.save("Labels updated")
 		}
 	case "search":
@@ -959,15 +970,18 @@ func (m model) commitEditField() (tea.Model, tea.Cmd) {
 	case "Due":
 		m.startInput("due", "Due date (today, tomorrow, +3d, yyyy-mm-dd, clear)", task.Due)
 	case "Priority":
+		id := task.ID
 		m.checkpoint()
 		cyclePriority(task)
+		m.reconcile(id)
 		return m, m.save("Priority updated")
 	case "Labels":
 		m.startInput("labels", "Labels", strings.Join(task.Labels, ", "))
 	case "Completed":
+		id := task.ID
 		m.checkpoint()
 		task.ToggleComplete()
-		m.clampSelection()
+		m.reconcile(id)
 		return m, m.save("Task updated")
 	}
 	return m, nil
@@ -989,6 +1003,48 @@ func (m *model) clampSelection() {
 	if m.selectFrom >= len(m.taskIDs) {
 		m.selectFrom = len(m.taskIDs) - 1
 	}
+}
+
+// reconcile restores a valid active view and keeps the acted-on task selected
+// whenever it remains visible. Mutations can remove a project or label view,
+// or reorder the task list, so doing this at the mutation boundary prevents
+// orphaned screens and index-based selection jumps.
+func (m *model) reconcile(taskID int) {
+	previous := m.selected
+	views := m.views()
+	if !containsView(views, m.view) {
+		m.view = "All"
+		m.flash("View no longer has tasks; switched to All")
+	}
+	m.sidebar = viewPosition(views, m.view)
+	m.clearTaskSelection()
+	m.refreshTaskIDs()
+	if len(m.taskIDs) == 0 {
+		m.selected = 0
+		return
+	}
+	if taskID != 0 {
+		for index, id := range m.taskIDs {
+			if id == taskID {
+				m.selected = index
+				return
+			}
+		}
+	}
+	m.selected = min(max(previous, 0), len(m.taskIDs)-1)
+}
+
+func containsView(views []string, target string) bool {
+	return viewPosition(views, target) >= 0
+}
+
+func viewPosition(views []string, target string) int {
+	for index, view := range views {
+		if view == target {
+			return index
+		}
+	}
+	return -1
 }
 
 func (m *model) refreshTaskIDs() []todo.Task {
@@ -1078,12 +1134,9 @@ func (m model) views() []string {
 }
 
 func visibleViews(tasks []todo.Task) []string {
-	var views []string
-	for _, view := range []string{"Today", "Upcoming", "All", "Completed"} {
-		if len(todo.Filter(tasks, view, "", time.Now())) > 0 {
-			views = append(views, view)
-		}
-	}
+	// Durable views stay visible at zero so sidebar navigation never shifts
+	// under the user. Inbox is the home for unprojected work.
+	views := []string{"Today", "Upcoming", "All", "Completed", "Inbox"}
 	for _, project := range todo.Projects(tasks) {
 		view := "#" + project
 		if project != "Inbox" && len(todo.Filter(tasks, view, "", time.Now())) > 0 {
