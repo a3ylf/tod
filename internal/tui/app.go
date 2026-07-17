@@ -776,7 +776,7 @@ func (m model) View() string {
 	} else if m.editing {
 		b.WriteString(truncate(m.editBar(bodyWidth), m.width))
 	} else {
-		b.WriteString(mutedStyle.Render(truncate(m.footer(), m.width)))
+		b.WriteString(mutedStyle.Render(m.footer()))
 		if m.search != "" {
 			b.WriteString(accentStyle.Render(truncate("  search: "+m.search, max(0, m.width-ansi.StringWidth(m.footer())))))
 		}
@@ -793,6 +793,12 @@ func (m model) View() string {
 }
 
 func (m model) footer() string {
+	if m.width < 64 {
+		if m.focus == paneSidebar {
+			return "up/down views tab n new ? help q"
+		}
+		return "n new e edit x done / find ? help q quit"
+	}
 	if m.focus == paneSidebar {
 		return "up/down views  tab tasks  n new  / search  ? help  q quit"
 	}
