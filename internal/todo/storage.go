@@ -19,6 +19,16 @@ func DefaultPath() (string, error) {
 	return filepath.Join(home, ".local", "share", "todos", "tasks.json"), nil
 }
 
+// TestPath returns the storage path used by the --test command-line mode.
+// It lives alongside the normal task file but is kept separate from it.
+func TestPath() (string, error) {
+	path, err := DefaultPath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(path), "tasks-test.json"), nil
+}
+
 func Load(path string) (Store, error) {
 	if path == "" {
 		var err error

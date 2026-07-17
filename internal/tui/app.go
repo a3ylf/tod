@@ -103,9 +103,18 @@ var priorityStyles = map[int]lipgloss.Style{
 }
 
 func Run() (*ExportedTask, error) {
-	path, err := todo.DefaultPath()
-	if err != nil {
-		return nil, err
+	return RunWithPath("")
+}
+
+// RunWithPath starts the TUI using path for task storage. An empty path uses
+// the normal default task storage path.
+func RunWithPath(path string) (*ExportedTask, error) {
+	if path == "" {
+		var err error
+		path, err = todo.DefaultPath()
+		if err != nil {
+			return nil, err
+		}
 	}
 	store, err := todo.Load(path)
 	if err != nil {

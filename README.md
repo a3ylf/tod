@@ -8,6 +8,12 @@ A personal Todoist-style TUI written in Go with Bubble Tea.
 go run ./cmd/todos
 ```
 
+Use the separate testing task database when trying changes:
+
+```sh
+go run ./cmd/todos --test
+```
+
 Build a local binary:
 
 ```sh
@@ -31,6 +37,8 @@ If `XDG_DATA_HOME` is not set, the app uses:
 ```text
 ~/.local/share/todos/tasks.json
 ```
+
+The `--test` mode uses `tasks-test.json` in the same directory.
 
 ## Keys
 

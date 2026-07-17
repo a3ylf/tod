@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 
+	"todos/internal/todo"
 	"todos/internal/tui"
 )
 
@@ -13,6 +14,7 @@ import (
 func Run(name string, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	test := flags.Bool("test", false, "use the testing database")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -22,7 +24,15 @@ func Run(name string, args []string, stdout, stderr io.Writer) error {
 	if flags.NArg() > 0 {
 		return fmt.Errorf("unknown argument: %s", flags.Arg(0))
 	}
-	exported, err := tui.Run()
+	path := ""
+	if *test {
+		var err error
+		path, err = todo.TestPath()
+		if err != nil {
+			return err
+		}
+	}
+	exported, err := tui.RunWithPath(path)
 	if err != nil {
 		return err
 	}
