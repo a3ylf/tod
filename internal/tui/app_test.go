@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -132,6 +133,45 @@ func TestMutationKeepsTaskSelectedByIDAfterResort(t *testing.T) {
 	m = updated.(model)
 	if task := m.currentTask(); task == nil || task.ID != 1 {
 		t.Fatalf("selected task = %#v, want task ID 1 after resort", task)
+	}
+}
+
+func TestSaveQueueWritesNewerRevisionOnlyAfterEarlierSave(t *testing.T) {
+	m := model{
+		path:  "/tmp/tasks.json",
+		store: todo.Store{NextID: 2, Tasks: []todo.Task{{ID: 1, Title: "one", Project: "Inbox", Priority: 4}}},
+	}
+	if cmd := m.requestSave("first"); cmd == nil || !m.saveInFlight || m.saveRevision != 1 {
+		t.Fatalf("first save = (%t, inFlight %t, revision %d), want queued revision 1", cmd != nil, m.saveInFlight, m.saveRevision)
+	}
+	m.store.Tasks[0].Title = "two"
+	if cmd := m.requestSave("second"); cmd != nil || m.saveRevision != 2 {
+		t.Fatalf("second save = (%t, revision %d), want deferred revision 2", cmd != nil, m.saveRevision)
+	}
+
+	updated, cmd := m.Update(savedMsg{revision: 1, text: "first"})
+	m = updated.(model)
+	if cmd == nil || !m.saveInFlight || m.savedRevision != 1 {
+		t.Fatalf("first acknowledgement = (%t, inFlight %t, saved %d), want next save started", cmd != nil, m.saveInFlight, m.savedRevision)
+	}
+	updated, cmd = m.Update(savedMsg{revision: 2, text: "second"})
+	m = updated.(model)
+	if cmd != nil || m.saveInFlight || m.savedRevision != 2 {
+		t.Fatalf("second acknowledgement = (%t, inFlight %t, saved %d), want queue drained", cmd != nil, m.saveInFlight, m.savedRevision)
+	}
+}
+
+func TestSaveFailureStaysVisibleAndCanRetry(t *testing.T) {
+	m := model{path: "/tmp/tasks.json", saveRevision: 1, saveInFlight: true}
+	updated, _ := m.Update(savedMsg{revision: 1, err: errors.New("disk full")})
+	m = updated.(model)
+	if !strings.Contains(m.View(), "Save failed: disk full  r retry") {
+		t.Fatalf("view does not show persistent save error: %q", m.View())
+	}
+	updated, cmd := m.updateNormal(key("r"))
+	m = updated.(model)
+	if cmd == nil || !m.saveInFlight || m.saveError != "" {
+		t.Fatalf("retry = (%t, inFlight %t, error %q), want a new save", cmd != nil, m.saveInFlight, m.saveError)
 	}
 }
 

@@ -15,29 +15,34 @@ import (
 )
 
 type model struct {
-	store       todo.Store
-	path        string
-	view        string
-	focus       pane
-	sidebar     int
-	selected    int
-	selectFrom  int
-	taskIDs     []int
-	width       int
-	height      int
-	search      string
-	input       inputState
-	inputUndo   []inputState
-	editing     bool
-	editTaskID  int
-	editField   int
-	message     string
-	messageAt   time.Time
-	confirmDel  bool
-	exportID    int
-	exportTitle string
-	copyOnExit  bool
-	undoStore   *todo.Store
+	store         todo.Store
+	path          string
+	view          string
+	focus         pane
+	sidebar       int
+	selected      int
+	selectFrom    int
+	taskIDs       []int
+	width         int
+	height        int
+	search        string
+	input         inputState
+	inputUndo     []inputState
+	editing       bool
+	editTaskID    int
+	editField     int
+	message       string
+	messageAt     time.Time
+	confirmDel    bool
+	exportID      int
+	exportTitle   string
+	copyOnExit    bool
+	undoStore     *todo.Store
+	saveRevision  uint64
+	savedRevision uint64
+	saveInFlight  bool
+	saveError     string
+	quitAfterSave bool
 }
 
 type ExportedTask struct {
@@ -65,8 +70,9 @@ type inputState struct {
 }
 
 type savedMsg struct {
-	text string
-	err  error
+	revision uint64
+	text     string
+	err      error
 }
 
 type copiedMsg struct {
@@ -161,12 +167,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 	case savedMsg:
+		m.saveInFlight = false
 		if msg.err != nil {
-			m.message = msg.err.Error()
-		} else {
-			m.message = msg.text
+			m.saveError = msg.err.Error()
+			return m, nil
 		}
+		m.savedRevision = msg.revision
+		m.saveError = ""
+		m.message = msg.text
 		m.messageAt = time.Now()
+		if m.savedRevision < m.saveRevision {
+			return m, m.startSave()
+		}
+		if m.quitAfterSave {
+			return m, tea.Quit
+		}
 		return m, nil
 	case copiedMsg:
 		if msg.err != nil {
@@ -198,13 +213,13 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "ctrl+c", "q":
-		return m, tea.Sequence(m.save("Saved"), tea.Quit)
+		return m, m.beginQuit()
 	case "ctrl+z", "u":
 		if m.undoStore != nil {
 			m.store = *m.undoStore
 			m.undoStore = nil
 			m.reconcile(0)
-			return m, m.save("Undone")
+			return m, m.requestSave("Undone")
 		}
 		m.flash("Nothing to undo")
 	case "w":
@@ -212,7 +227,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(tasks) > 0 {
 			m.exportID = tasks[0].ID
 			m.exportTitle = taskTitles(tasks)
-			return m, tea.Sequence(m.save("Saved"), tea.Quit)
+			return m, m.beginQuit()
 		}
 	case "W":
 		tasks := m.selectedTasks()
@@ -221,7 +236,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.exportID = tasks[0].ID
 			m.exportTitle = title
 			m.copyOnExit = true
-			return m, tea.Sequence(copyTaskCmd(title), m.save("Saved"), tea.Quit)
+			return m, tea.Sequence(copyTaskCmd(title), m.beginQuit())
 		}
 	case "y":
 		tasks := m.selectedTasks()
@@ -277,7 +292,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.checkpoint()
 			task.ToggleComplete()
 			m.reconcile(id)
-			return m, m.save("Task updated")
+			return m, m.requestSave("Task updated")
 		}
 	case "d":
 		if task := m.currentTask(); task != nil {
@@ -289,7 +304,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.checkpoint()
 			cyclePriority(task)
 			m.reconcile(id)
-			return m, m.save("Priority updated")
+			return m, m.requestSave("Priority updated")
 		}
 	case "P":
 		if task := m.currentTask(); task != nil {
@@ -316,10 +331,17 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.store.Delete(task.ID)
 			m.confirmDel = false
 			m.reconcile(0)
-			return m, m.save("Task deleted")
+			return m, m.requestSave("Task deleted")
 		}
 	case "?":
 		m.startInput("help", "Keys: left/right side, up/down move, n add, e edit, w export, W copy+quit, y copy, x done, / search, D delete, q quit", "")
+	case "r":
+		if m.saveError == "" {
+			m.flash("Nothing to retry")
+			break
+		}
+		m.saveError = ""
+		return m, m.startSave()
 	}
 	m.clampSelection()
 	return m, nil
@@ -333,7 +355,7 @@ func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "ctrl+c", "q":
-		return m, tea.Sequence(m.save("Saved"), tea.Quit)
+		return m, m.beginQuit()
 	case "esc", "e", "up", "down":
 		m.editing = false
 		m.editTaskID = 0
@@ -349,7 +371,7 @@ func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.checkpoint()
 			task.ToggleComplete()
 			m.reconcile(id)
-			return m, m.save("Task updated")
+			return m, m.requestSave("Task updated")
 		}
 	case "p":
 		if task := m.editingTask(); task != nil {
@@ -357,7 +379,7 @@ func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.checkpoint()
 			cyclePriority(task)
 			m.reconcile(id)
-			return m, m.save("Priority updated")
+			return m, m.requestSave("Priority updated")
 		}
 	}
 	return m, nil
@@ -629,7 +651,7 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 		m.checkpoint()
 		id := m.store.Add(value, project)
 		m.reconcile(id)
-		return m, m.save("Task added")
+		return m, m.requestSave("Task added")
 	case "title":
 		if task := m.targetTask(); task != nil && value != "" {
 			m.checkpoint()
@@ -637,7 +659,7 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.reconcile(task.ID)
-			return m, m.save("Task updated")
+			return m, m.requestSave("Task updated")
 		}
 	case "edit":
 		if task := m.editingTask(); task != nil && value != "" {
@@ -648,7 +670,7 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 			m.editing = false
 			m.editTaskID = 0
 			m.reconcile(task.ID)
-			return m, m.save("Task updated")
+			return m, m.requestSave("Task updated")
 		}
 	case "due":
 		if task := m.targetTask(); task != nil {
@@ -660,7 +682,7 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 			m.checkpoint()
 			task.Due = due
 			m.reconcile(task.ID)
-			return m, m.save("Due date updated")
+			return m, m.requestSave("Due date updated")
 		}
 	case "project":
 		if task := m.targetTask(); task != nil {
@@ -671,14 +693,14 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 			m.checkpoint()
 			task.Project = project
 			m.reconcile(task.ID)
-			return m, m.save("Project updated")
+			return m, m.requestSave("Project updated")
 		}
 	case "labels":
 		if task := m.targetTask(); task != nil {
 			m.checkpoint()
 			task.Labels = todo.CleanLabels(value)
 			m.reconcile(task.ID)
-			return m, m.save("Labels updated")
+			return m, m.requestSave("Labels updated")
 		}
 	case "search":
 		m.search = value
@@ -754,6 +776,10 @@ func (m model) View() string {
 	if m.message != "" && time.Since(m.messageAt) < 4*time.Second {
 		b.WriteByte('\n')
 		b.WriteString(accentStyle.Render(m.message))
+	}
+	if m.saveError != "" {
+		b.WriteByte('\n')
+		b.WriteString(warnStyle.Render("Save failed: " + m.saveError + "  r retry"))
 	}
 	return b.String()
 }
@@ -845,11 +871,7 @@ func (m *model) flash(message string) {
 }
 
 func (m *model) checkpoint() {
-	store := m.store
-	store.Tasks = append([]todo.Task(nil), m.store.Tasks...)
-	for i := range store.Tasks {
-		store.Tasks[i].Labels = append([]string(nil), m.store.Tasks[i].Labels...)
-	}
+	store := copyStore(m.store)
 	m.undoStore = &store
 }
 
@@ -863,12 +885,51 @@ func (m model) focusLabel() string {
 	return activeChipStyle.Render("tasks")
 }
 
-func (m model) save(message string) tea.Cmd {
-	store := m.store
+// requestSave records a new store revision. Only one write runs at a time, so
+// a slower older snapshot can never overwrite a newer mutation on disk.
+func (m *model) requestSave(message string) tea.Cmd {
+	m.saveRevision++
+	if m.saveInFlight {
+		return nil
+	}
+	return m.startSaveWithMessage(message)
+}
+
+func (m *model) startSave() tea.Cmd {
+	return m.startSaveWithMessage("Saved")
+}
+
+func (m *model) startSaveWithMessage(message string) tea.Cmd {
+	if m.saveInFlight || m.savedRevision >= m.saveRevision {
+		return nil
+	}
+	m.saveInFlight = true
+	revision := m.saveRevision
+	store := copyStore(m.store)
 	path := m.path
 	return func() tea.Msg {
-		return savedMsg{text: message, err: todo.Save(path, store)}
+		return savedMsg{revision: revision, text: message, err: todo.Save(path, store)}
 	}
+}
+
+func (m *model) beginQuit() tea.Cmd {
+	m.quitAfterSave = true
+	if m.saveInFlight {
+		return nil
+	}
+	if m.savedRevision < m.saveRevision {
+		return m.startSave()
+	}
+	return tea.Quit
+}
+
+func copyStore(source todo.Store) todo.Store {
+	store := source
+	store.Tasks = append([]todo.Task(nil), source.Tasks...)
+	for index := range store.Tasks {
+		store.Tasks[index].Labels = append([]string(nil), source.Tasks[index].Labels...)
+	}
+	return store
 }
 
 func copyTaskCmd(text string) tea.Cmd {
@@ -974,7 +1035,7 @@ func (m model) commitEditField() (tea.Model, tea.Cmd) {
 		m.checkpoint()
 		cyclePriority(task)
 		m.reconcile(id)
-		return m, m.save("Priority updated")
+		return m, m.requestSave("Priority updated")
 	case "Labels":
 		m.startInput("labels", "Labels", strings.Join(task.Labels, ", "))
 	case "Completed":
@@ -982,7 +1043,7 @@ func (m model) commitEditField() (tea.Model, tea.Cmd) {
 		m.checkpoint()
 		task.ToggleComplete()
 		m.reconcile(id)
-		return m, m.save("Task updated")
+		return m, m.requestSave("Task updated")
 	}
 	return m, nil
 }
