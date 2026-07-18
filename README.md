@@ -2,6 +2,9 @@
 
 A personal Todoist-style TUI written in Go with Bubble Tea.
 
+The TUI supports terminals as small as 40×10. Below 64 columns it switches to
+a single task pane while keyboard view navigation remains available.
+
 ## Run
 
 ```sh
@@ -89,8 +92,10 @@ P              move to project
 L              edit labels
 /              search
 c              clear search
+?              show complete keyboard help
 D              delete, press twice
 ctrl+z or u    undo last task change
+r              retry a failed save
 q              save and quit
 ```
 

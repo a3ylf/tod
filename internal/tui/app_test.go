@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -61,10 +62,12 @@ func TestPaneNavigation(t *testing.T) {
 	if m.focus != paneSidebar {
 		t.Fatalf("left focus = %v, want sidebar", m.focus)
 	}
-	updated, _ = m.updateNormal(key("down"))
-	m = updated.(model)
+	for range 5 {
+		updated, _ = m.updateNormal(key("down"))
+		m = updated.(model)
+	}
 	if m.view != "#Work" {
-		t.Fatalf("sidebar down view = %q, want #Work", m.view)
+		t.Fatalf("sidebar view = %q, want #Work", m.view)
 	}
 	updated, _ = m.updateNormal(key("right"))
 	m = updated.(model)
@@ -81,7 +84,7 @@ func TestInitialModelStartsOnViews(t *testing.T) {
 	}
 }
 
-func TestViewsStartWithTodayHideInboxAndZeroCounts(t *testing.T) {
+func TestViewsKeepDurableNavigationAtZeroCounts(t *testing.T) {
 	today := time.Now().Format("2006-01-02")
 	m := model{
 		store: todo.Store{Tasks: []todo.Task{
@@ -93,10 +96,82 @@ func TestViewsStartWithTodayHideInboxAndZeroCounts(t *testing.T) {
 	if len(views) == 0 || views[0] != "Today" {
 		t.Fatalf("views = %v, want Today first", views)
 	}
-	for _, view := range views {
-		if view == "Inbox" || view == "Upcoming" || view == "Completed" {
-			t.Fatalf("views = %v, want Inbox and zero-count views hidden", views)
+	for _, want := range []string{"Today", "Upcoming", "All", "Completed", "Inbox"} {
+		if !containsView(views, want) {
+			t.Fatalf("views = %v, want durable %q view", views, want)
 		}
+	}
+}
+
+func TestMutationReconcilesRemovedLabelView(t *testing.T) {
+	m := model{
+		store: todo.Store{NextID: 2, Tasks: []todo.Task{{ID: 1, Title: "one", Project: "Inbox", Priority: 4, Labels: []string{"focus"}}}},
+		view:  "@focus",
+		focus: paneTasks,
+	}
+	updated, _ := m.updateNormal(key("D"))
+	m = updated.(model)
+	updated, _ = m.updateNormal(key("D"))
+	m = updated.(model)
+	if m.view != "All" || m.sidebar != viewPosition(m.views(), "All") {
+		t.Fatalf("deleted label view = (%q, sidebar %d), want All selected", m.view, m.sidebar)
+	}
+}
+
+func TestMutationKeepsTaskSelectedByIDAfterResort(t *testing.T) {
+	m := model{
+		store: todo.Store{NextID: 3, Tasks: []todo.Task{
+			{ID: 1, Title: "later", Project: "Inbox", Due: "2026-07-20", Priority: 4},
+			{ID: 2, Title: "soon", Project: "Inbox", Due: "2026-07-19", Priority: 4},
+		}},
+		view:     "All",
+		focus:    paneTasks,
+		selected: 1,
+	}
+	m.input = inputState{active: true, kind: "due", title: "Due", value: "2026-07-18"}
+	updated, _ := m.commitInput()
+	m = updated.(model)
+	if task := m.currentTask(); task == nil || task.ID != 1 {
+		t.Fatalf("selected task = %#v, want task ID 1 after resort", task)
+	}
+}
+
+func TestSaveQueueWritesNewerRevisionOnlyAfterEarlierSave(t *testing.T) {
+	m := model{
+		path:  "/tmp/tasks.json",
+		store: todo.Store{NextID: 2, Tasks: []todo.Task{{ID: 1, Title: "one", Project: "Inbox", Priority: 4}}},
+	}
+	if cmd := m.requestSave("first"); cmd == nil || !m.saveInFlight || m.saveRevision != 1 {
+		t.Fatalf("first save = (%t, inFlight %t, revision %d), want queued revision 1", cmd != nil, m.saveInFlight, m.saveRevision)
+	}
+	m.store.Tasks[0].Title = "two"
+	if cmd := m.requestSave("second"); cmd != nil || m.saveRevision != 2 {
+		t.Fatalf("second save = (%t, revision %d), want deferred revision 2", cmd != nil, m.saveRevision)
+	}
+
+	updated, cmd := m.Update(savedMsg{revision: 1, text: "first"})
+	m = updated.(model)
+	if cmd == nil || !m.saveInFlight || m.savedRevision != 1 {
+		t.Fatalf("first acknowledgement = (%t, inFlight %t, saved %d), want next save started", cmd != nil, m.saveInFlight, m.savedRevision)
+	}
+	updated, cmd = m.Update(savedMsg{revision: 2, text: "second"})
+	m = updated.(model)
+	if cmd != nil || m.saveInFlight || m.savedRevision != 2 {
+		t.Fatalf("second acknowledgement = (%t, inFlight %t, saved %d), want queue drained", cmd != nil, m.saveInFlight, m.savedRevision)
+	}
+}
+
+func TestSaveFailureStaysVisibleAndCanRetry(t *testing.T) {
+	m := model{path: "/tmp/tasks.json", saveRevision: 1, saveInFlight: true}
+	updated, _ := m.Update(savedMsg{revision: 1, err: errors.New("disk full")})
+	m = updated.(model)
+	if !strings.Contains(m.View(), "Save failed: disk full  r retry") {
+		t.Fatalf("view does not show persistent save error: %q", m.View())
+	}
+	updated, cmd := m.updateNormal(key("r"))
+	m = updated.(model)
+	if cmd == nil || !m.saveInFlight || m.saveError != "" {
+		t.Fatalf("retry = (%t, inFlight %t, error %q), want a new save", cmd != nil, m.saveInFlight, m.saveError)
 	}
 }
 
@@ -114,6 +189,44 @@ func TestViewSeparatesHeaderFromContent(t *testing.T) {
 	lines := strings.Split(m.View(), "\n")
 	if len(lines) < 2 || !strings.Contains(lines[1], "---") {
 		t.Fatalf("second line = %q, want header separator", lines[1])
+	}
+}
+
+func TestEmptyStoreShowsGuidanceWithoutCreatingTask(t *testing.T) {
+	m := initialModel(todo.NewStore(), "/tmp/tasks.json")
+	if len(m.store.Tasks) != 0 {
+		t.Fatalf("empty store contains %d tasks, want none", len(m.store.Tasks))
+	}
+	if got := m.View(); !strings.Contains(got, "No tasks") || !strings.Contains(got, "n new") {
+		t.Fatalf("empty view = %q, want actionable empty state", got)
+	}
+}
+
+func TestNarrowViewNeverExceedsTerminalWidth(t *testing.T) {
+	m := model{
+		store:  todo.Store{NextID: 2, Tasks: []todo.Task{{ID: 1, Title: "a very long task title with metadata", Project: "Work", Labels: []string{"focus"}, Priority: 2}}},
+		view:   "All",
+		focus:  paneTasks,
+		width:  40,
+		height: 10,
+	}
+	for _, line := range strings.Split(m.View(), "\n") {
+		if got := ansi.StringWidth(line); got > m.width {
+			t.Fatalf("line width = %d, want <= %d: %q", got, m.width, line)
+		}
+	}
+}
+
+func TestHelpOverlayIsReadableAtEightyColumns(t *testing.T) {
+	m := model{width: 80, height: 24, showHelp: true}
+	help := m.View()
+	if !strings.Contains(help, "Navigation") || !strings.Contains(help, "ctrl-w delete word") || !strings.Contains(help, "Press any key to close help") {
+		t.Fatalf("help = %q, want complete grouped shortcuts", help)
+	}
+	for _, line := range strings.Split(help, "\n") {
+		if got := ansi.StringWidth(line); got > 80 {
+			t.Fatalf("help line width = %d, want <= 80: %q", got, line)
+		}
 	}
 }
 

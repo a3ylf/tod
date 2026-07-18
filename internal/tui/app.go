@@ -15,30 +15,36 @@ import (
 )
 
 type model struct {
-	store       todo.Store
-	database    *todo.Database
-	path        string
-	view        string
-	focus       pane
-	sidebar     int
-	selected    int
-	selectFrom  int
-	taskIDs     []int
-	width       int
-	height      int
-	search      string
-	input       inputState
-	inputUndo   []inputState
-	editing     bool
-	editTaskID  int
-	editField   int
-	message     string
-	messageAt   time.Time
-	confirmDel  bool
-	exportID    int
-	exportTitle string
-	copyOnExit  bool
-	undoStore   *todo.Store
+	store         todo.Store
+	database      *todo.Database
+	path          string
+	view          string
+	focus         pane
+	sidebar       int
+	selected      int
+	selectFrom    int
+	taskIDs       []int
+	width         int
+	height        int
+	search        string
+	input         inputState
+	inputUndo     []inputState
+	editing       bool
+	editTaskID    int
+	editField     int
+	message       string
+	messageAt     time.Time
+	confirmDel    bool
+	exportID      int
+	exportTitle   string
+	copyOnExit    bool
+	undoStore     *todo.Store
+	saveRevision  uint64
+	savedRevision uint64
+	saveInFlight  bool
+	saveError     string
+	quitAfterSave bool
+	showHelp      bool
 }
 
 type ExportedTask struct {
@@ -66,8 +72,9 @@ type inputState struct {
 }
 
 type savedMsg struct {
-	text string
-	err  error
+	revision uint64
+	text     string
+	err      error
 }
 
 type copiedMsg struct {
@@ -107,9 +114,6 @@ func Run(path string) (*ExportedTask, error) {
 	database, store, err := todo.Open(path)
 	if err != nil {
 		return nil, err
-	}
-	if len(store.Tasks) == 0 {
-		store.Add("Press n to add your first task", "Inbox")
 	}
 	m := initialModel(store, database.Path)
 	m.database = database
@@ -163,12 +167,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 	case savedMsg:
+		m.saveInFlight = false
 		if msg.err != nil {
-			m.message = msg.err.Error()
-		} else {
-			m.message = msg.text
+			m.saveError = msg.err.Error()
+			return m, nil
 		}
+		m.savedRevision = msg.revision
+		m.saveError = ""
+		m.message = msg.text
 		m.messageAt = time.Now()
+		if m.savedRevision < m.saveRevision {
+			return m, m.startSave()
+		}
+		if m.quitAfterSave {
+			return m, tea.Quit
+		}
 		return m, nil
 	case copiedMsg:
 		if msg.err != nil {
@@ -192,6 +205,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.showHelp {
+		m.showHelp = false
+		return m, nil
+	}
 	if m.editing {
 		return m.updateEdit(msg)
 	}
@@ -200,13 +217,13 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "ctrl+c", "q":
-		return m, tea.Sequence(m.save("Saved"), tea.Quit)
+		return m, m.beginQuit()
 	case "ctrl+z", "u":
 		if m.undoStore != nil {
 			m.store = *m.undoStore
 			m.undoStore = nil
-			m.clampSelection()
-			return m, m.save("Undone")
+			m.reconcile(0)
+			return m, m.requestSave("Undone")
 		}
 		m.flash("Nothing to undo")
 	case "w":
@@ -214,7 +231,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(tasks) > 0 {
 			m.exportID = tasks[0].ID
 			m.exportTitle = taskTitles(tasks)
-			return m, tea.Sequence(m.save("Saved"), tea.Quit)
+			return m, m.beginQuit()
 		}
 	case "W":
 		tasks := m.selectedTasks()
@@ -223,7 +240,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.exportID = tasks[0].ID
 			m.exportTitle = title
 			m.copyOnExit = true
-			return m, tea.Sequence(copyTaskCmd(title), m.save("Saved"), tea.Quit)
+			return m, tea.Sequence(copyTaskCmd(title), m.beginQuit())
 		}
 	case "y":
 		tasks := m.selectedTasks()
@@ -275,9 +292,11 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "x", " ":
 		if task := m.currentTask(); task != nil {
+			id := task.ID
 			m.checkpoint()
 			task.ToggleComplete()
-			return m, m.save("Task updated")
+			m.reconcile(id)
+			return m, m.requestSave("Task updated")
 		}
 	case "d":
 		if task := m.currentTask(); task != nil {
@@ -285,9 +304,11 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "p":
 		if task := m.currentTask(); task != nil {
+			id := task.ID
 			m.checkpoint()
 			cyclePriority(task)
-			return m, m.save("Priority updated")
+			m.reconcile(id)
+			return m, m.requestSave("Priority updated")
 		}
 	case "P":
 		if task := m.currentTask(); task != nil {
@@ -313,11 +334,18 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.checkpoint()
 			m.store.Delete(task.ID)
 			m.confirmDel = false
-			m.clampSelection()
-			return m, m.save("Task deleted")
+			m.reconcile(0)
+			return m, m.requestSave("Task deleted")
 		}
 	case "?":
-		m.startInput("help", "Keys: left/right side, up/down move, n add, e edit, w export, W copy+quit, y copy, x done, / search, D delete, q quit", "")
+		m.showHelp = true
+	case "r":
+		if m.saveError == "" {
+			m.flash("Nothing to retry")
+			break
+		}
+		m.saveError = ""
+		return m, m.startSave()
 	}
 	m.clampSelection()
 	return m, nil
@@ -331,7 +359,7 @@ func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "ctrl+c", "q":
-		return m, tea.Sequence(m.save("Saved"), tea.Quit)
+		return m, m.beginQuit()
 	case "esc", "e", "up", "down":
 		m.editing = false
 		m.editTaskID = 0
@@ -343,16 +371,19 @@ func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.commitEditField()
 	case "x":
 		if task := m.editingTask(); task != nil {
+			id := task.ID
 			m.checkpoint()
 			task.ToggleComplete()
-			m.clampSelection()
-			return m, m.save("Task updated")
+			m.reconcile(id)
+			return m, m.requestSave("Task updated")
 		}
 	case "p":
 		if task := m.editingTask(); task != nil {
+			id := task.ID
 			m.checkpoint()
 			cyclePriority(task)
-			return m, m.save("Priority updated")
+			m.reconcile(id)
+			return m, m.requestSave("Priority updated")
 		}
 	}
 	return m, nil
@@ -623,15 +654,16 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 		}
 		m.checkpoint()
 		id := m.store.Add(value, project)
-		m.selectID(id)
-		return m, m.save("Task added")
+		m.reconcile(id)
+		return m, m.requestSave("Task added")
 	case "title":
 		if task := m.targetTask(); task != nil && value != "" {
 			m.checkpoint()
 			if !todo.ApplyTaskText(task, value, time.Now()) {
 				return m, nil
 			}
-			return m, m.save("Task updated")
+			m.reconcile(task.ID)
+			return m, m.requestSave("Task updated")
 		}
 	case "edit":
 		if task := m.editingTask(); task != nil && value != "" {
@@ -641,8 +673,8 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 			}
 			m.editing = false
 			m.editTaskID = 0
-			m.clampSelection()
-			return m, m.save("Task updated")
+			m.reconcile(task.ID)
+			return m, m.requestSave("Task updated")
 		}
 	case "due":
 		if task := m.targetTask(); task != nil {
@@ -653,7 +685,8 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 			}
 			m.checkpoint()
 			task.Due = due
-			return m, m.save("Due date updated")
+			m.reconcile(task.ID)
+			return m, m.requestSave("Due date updated")
 		}
 	case "project":
 		if task := m.targetTask(); task != nil {
@@ -663,13 +696,15 @@ func (m model) commitInput() (tea.Model, tea.Cmd) {
 			}
 			m.checkpoint()
 			task.Project = project
-			return m, m.save("Project updated")
+			m.reconcile(task.ID)
+			return m, m.requestSave("Project updated")
 		}
 	case "labels":
 		if task := m.targetTask(); task != nil {
 			m.checkpoint()
 			task.Labels = todo.CleanLabels(value)
-			return m, m.save("Labels updated")
+			m.reconcile(task.ID)
+			return m, m.requestSave("Labels updated")
 		}
 	case "search":
 		m.search = value
@@ -686,43 +721,49 @@ func (m model) View() string {
 	if m.height <= 0 {
 		m.height = 30
 	}
+	if m.showHelp {
+		return m.helpView()
+	}
 	tasks := m.filteredTasks()
 	views := m.views()
-	sideWidth := 22
-	if m.width < 90 {
-		sideWidth = 18
+	showSidebar := m.width >= 64
+	sideWidth := 0
+	bodyWidth := m.width
+	if showSidebar {
+		sideWidth = min(22, max(14, m.width/4))
+		bodyWidth = m.width - sideWidth - 3
 	}
-	bodyWidth := m.width - sideWidth - 3
-	if bodyWidth < 40 {
-		bodyWidth = 40
-	}
-	contentRows := m.height - 6
-	if contentRows < 8 {
-		contentRows = 8
-	}
+	contentRows := max(1, m.height-5)
 
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("todos"))
 	b.WriteString(mutedStyle.Render("  " + m.view + "  "))
 	b.WriteString(m.focusLabel())
-	b.WriteString(mutedStyle.Render("  data: " + m.path))
+	if m.width >= 100 {
+		b.WriteString(mutedStyle.Render("  data: " + m.path))
+	}
 	b.WriteByte('\n')
 	b.WriteString(borderStyle.Render(strings.Repeat("-", max(1, m.width))))
 	b.WriteByte('\n')
 
 	taskLines := m.taskListLines(tasks, bodyWidth, max(1, contentRows-1))
 	for i := 0; i < contentRows; i++ {
-		left := ""
-		if i == 0 {
-			left = m.sidebarHeader(sideWidth)
-		} else if viewIndex := i - 1; viewIndex < len(views) {
-			left = m.sidebarRow(viewIndex, views[viewIndex], sideWidth)
-		}
 		right := ""
 		if i == 0 {
 			right = m.headerRow(tasks)
 		} else if lineIndex := i - 1; lineIndex < len(taskLines) {
 			right = taskLines[lineIndex]
+		}
+		if !showSidebar {
+			b.WriteString(pad(right, bodyWidth))
+			b.WriteByte('\n')
+			continue
+		}
+		left := ""
+		if i == 0 {
+			left = m.sidebarHeader(sideWidth)
+		} else if viewIndex := i - 1; viewIndex < len(views) {
+			left = m.sidebarRow(viewIndex, views[viewIndex], sideWidth)
 		}
 		b.WriteString(pad(left, sideWidth))
 		b.WriteString(borderStyle.Render(" | "))
@@ -735,16 +776,63 @@ func (m model) View() string {
 	if m.input.active {
 		b.WriteString(m.inputView(m.width))
 	} else if m.editing {
-		b.WriteString(m.editBar(bodyWidth))
+		b.WriteString(truncate(m.editBar(bodyWidth), m.width))
 	} else {
-		b.WriteString(mutedStyle.Render("left/right side  up/down move  ctrl+up/down select  tab side  n add  e edit  y copy  w export  W copy+quit  x done  / search  D delete  q quit"))
+		b.WriteString(mutedStyle.Render(m.footer()))
 		if m.search != "" {
-			b.WriteString(accentStyle.Render("  search: " + m.search))
+			b.WriteString(accentStyle.Render(truncate("  search: "+m.search, max(0, m.width-ansi.StringWidth(m.footer())))))
 		}
 	}
 	if m.message != "" && time.Since(m.messageAt) < 4*time.Second {
 		b.WriteByte('\n')
 		b.WriteString(accentStyle.Render(m.message))
+	}
+	if m.saveError != "" {
+		b.WriteByte('\n')
+		b.WriteString(warnStyle.Render("Save failed: " + m.saveError + "  r retry"))
+	}
+	return b.String()
+}
+
+func (m model) footer() string {
+	if m.width < 64 {
+		if m.focus == paneSidebar {
+			return "up/down views tab n new ? help q"
+		}
+		return "n new e edit x done / find ? help q quit"
+	}
+	if m.focus == paneSidebar {
+		return "up/down views  tab tasks  n new  / search  ? help  q quit"
+	}
+	return "n new  e edit  x done  p priority  / search  y copy  D delete  ? help  q quit"
+}
+
+func (m model) helpView() string {
+	lines := []string{
+		"tod — keyboard help",
+		"Navigation  arrows/hjkl move · tab switch pane · ctrl+up/down select range",
+		"Tasks       n new · e/enter edit · x/space complete · p priority · d due",
+		"Metadata    P project · L labels · / search · c clear search",
+		"Selection   y copy · w export · W copy and quit · D twice delete",
+		"Safety      u/ctrl+z undo · r retry failed save · q save and quit",
+		"Editing     enter apply · esc cancel · alt arrows words · ctrl-w delete word",
+		"Task text   use p3, tomorrow, #Project, and @label inline",
+		"Press any key to close help",
+	}
+	limit := max(1, m.height)
+	var b strings.Builder
+	for index, line := range lines {
+		if index >= limit {
+			break
+		}
+		if index > 0 {
+			b.WriteByte('\n')
+		}
+		if index == 0 {
+			b.WriteString(titleStyle.Render(truncate(line, m.width)))
+		} else {
+			b.WriteString(truncate(line, m.width))
+		}
 	}
 	return b.String()
 }
@@ -752,8 +840,8 @@ func (m model) View() string {
 func (m model) inputView(width int) string {
 	prefix := m.input.title + ": "
 	available := width - ansi.StringWidth(prefix)
-	if available < 10 {
-		available = 10
+	if available < 1 {
+		available = 1
 	}
 	lines := wrapTextPreserveWords(m.input.value, available)
 	if len(lines) == 0 {
@@ -816,8 +904,8 @@ func (m model) inputLayout() (top int, height int, available int) {
 	top = contentRows + 3
 	prefixWidth := ansi.StringWidth(m.input.title + ": ")
 	available = width - prefixWidth
-	if available < 10 {
-		available = 10
+	if available < 1 {
+		available = 1
 	}
 	height = len(wrapTextPreserveWords(m.input.value, available))
 	if height == 0 {
@@ -836,11 +924,7 @@ func (m *model) flash(message string) {
 }
 
 func (m *model) checkpoint() {
-	store := m.store
-	store.Tasks = append([]todo.Task(nil), m.store.Tasks...)
-	for i := range store.Tasks {
-		store.Tasks[i].Labels = append([]string(nil), m.store.Tasks[i].Labels...)
-	}
+	store := copyStore(m.store)
 	m.undoStore = &store
 }
 
@@ -854,16 +938,55 @@ func (m model) focusLabel() string {
 	return activeChipStyle.Render("tasks")
 }
 
-func (m model) save(message string) tea.Cmd {
-	store := m.store
+// requestSave records a new store revision. Only one write runs at a time, so
+// a slower older snapshot can never overwrite a newer mutation on disk.
+func (m *model) requestSave(message string) tea.Cmd {
+	m.saveRevision++
+	if m.saveInFlight {
+		return nil
+	}
+	return m.startSaveWithMessage(message)
+}
+
+func (m *model) startSave() tea.Cmd {
+	return m.startSaveWithMessage("Saved")
+}
+
+func (m *model) startSaveWithMessage(message string) tea.Cmd {
+	if m.saveInFlight || m.savedRevision >= m.saveRevision {
+		return nil
+	}
+	m.saveInFlight = true
+	revision := m.saveRevision
+	store := copyStore(m.store)
 	path := m.path
 	database := m.database
 	return func() tea.Msg {
 		if database != nil {
-			return savedMsg{text: message, err: database.Save(store)}
+			return savedMsg{revision: revision, text: message, err: database.Save(store)}
 		}
-		return savedMsg{text: message, err: todo.Save(path, store)}
+		return savedMsg{revision: revision, text: message, err: todo.Save(path, store)}
 	}
+}
+
+func (m *model) beginQuit() tea.Cmd {
+	m.quitAfterSave = true
+	if m.saveInFlight {
+		return nil
+	}
+	if m.savedRevision < m.saveRevision {
+		return m.startSave()
+	}
+	return tea.Quit
+}
+
+func copyStore(source todo.Store) todo.Store {
+	store := source
+	store.Tasks = append([]todo.Task(nil), source.Tasks...)
+	for index := range store.Tasks {
+		store.Tasks[index].Labels = append([]string(nil), source.Tasks[index].Labels...)
+	}
+	return store
 }
 
 func copyTaskCmd(text string) tea.Cmd {
@@ -965,16 +1088,19 @@ func (m model) commitEditField() (tea.Model, tea.Cmd) {
 	case "Due":
 		m.startInput("due", "Due date (today, tomorrow, +3d, yyyy-mm-dd, clear)", task.Due)
 	case "Priority":
+		id := task.ID
 		m.checkpoint()
 		cyclePriority(task)
-		return m, m.save("Priority updated")
+		m.reconcile(id)
+		return m, m.requestSave("Priority updated")
 	case "Labels":
 		m.startInput("labels", "Labels", strings.Join(task.Labels, ", "))
 	case "Completed":
+		id := task.ID
 		m.checkpoint()
 		task.ToggleComplete()
-		m.clampSelection()
-		return m, m.save("Task updated")
+		m.reconcile(id)
+		return m, m.requestSave("Task updated")
 	}
 	return m, nil
 }
@@ -995,6 +1121,48 @@ func (m *model) clampSelection() {
 	if m.selectFrom >= len(m.taskIDs) {
 		m.selectFrom = len(m.taskIDs) - 1
 	}
+}
+
+// reconcile restores a valid active view and keeps the acted-on task selected
+// whenever it remains visible. Mutations can remove a project or label view,
+// or reorder the task list, so doing this at the mutation boundary prevents
+// orphaned screens and index-based selection jumps.
+func (m *model) reconcile(taskID int) {
+	previous := m.selected
+	views := m.views()
+	if !containsView(views, m.view) {
+		m.view = "All"
+		m.flash("View no longer has tasks; switched to All")
+	}
+	m.sidebar = viewPosition(views, m.view)
+	m.clearTaskSelection()
+	m.refreshTaskIDs()
+	if len(m.taskIDs) == 0 {
+		m.selected = 0
+		return
+	}
+	if taskID != 0 {
+		for index, id := range m.taskIDs {
+			if id == taskID {
+				m.selected = index
+				return
+			}
+		}
+	}
+	m.selected = min(max(previous, 0), len(m.taskIDs)-1)
+}
+
+func containsView(views []string, target string) bool {
+	return viewPosition(views, target) >= 0
+}
+
+func viewPosition(views []string, target string) int {
+	for index, view := range views {
+		if view == target {
+			return index
+		}
+	}
+	return -1
 }
 
 func (m *model) refreshTaskIDs() []todo.Task {
@@ -1084,12 +1252,9 @@ func (m model) views() []string {
 }
 
 func visibleViews(tasks []todo.Task) []string {
-	var views []string
-	for _, view := range []string{"Today", "Upcoming", "All", "Completed"} {
-		if len(todo.Filter(tasks, view, "", time.Now())) > 0 {
-			views = append(views, view)
-		}
-	}
+	// Durable views stay visible at zero so sidebar navigation never shifts
+	// under the user. Inbox is the home for unprojected work.
+	views := []string{"Today", "Upcoming", "All", "Completed", "Inbox"}
 	for _, project := range todo.Projects(tasks) {
 		view := "#" + project
 		if project != "Inbox" && len(todo.Filter(tasks, view, "", time.Now())) > 0 {
@@ -1149,6 +1314,9 @@ func (m model) taskListLines(tasks []todo.Task, width int, visible int) []string
 	if visible <= 0 {
 		return nil
 	}
+	if len(tasks) == 0 {
+		return []string{m.emptyState(width)}
+	}
 	if m.selectFrom >= 0 {
 		return m.selectedTaskRangeBox(tasks, width, visible)
 	}
@@ -1171,6 +1339,16 @@ func (m model) taskListLines(tasks []todo.Task, width int, visible int) []string
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+func (m model) emptyState(width int) string {
+	message := "No tasks — n new"
+	if m.search != "" {
+		message = "No matching tasks — c clear search · n new"
+	} else if m.view != "All" && m.view != "Inbox" {
+		message = "No tasks in " + m.view + " — n new"
+	}
+	return mutedStyle.Render(truncate(message, width))
 }
 
 func (m model) selectedTaskRangeBox(tasks []todo.Task, width int, visible int) []string {
