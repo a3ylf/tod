@@ -8,6 +8,12 @@ A personal Todoist-style TUI written in Go with Bubble Tea.
 go run ./cmd/todos
 ```
 
+Use the separate testing task database when trying changes:
+
+```sh
+go run ./cmd/todos --test
+```
+
 Build a local binary:
 
 ```sh
@@ -61,6 +67,8 @@ The database is exclusively locked while the TUI is open. A second instance
 using the same file exits with a database-in-use message. If the process is
 terminated unexpectedly, remove the matching `.lock` file manually after
 confirming that no `tod` instance is still running.
+
+The `--test` mode uses `tasks-test.json` in the same directory.
 
 ## Keys
 

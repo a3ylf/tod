@@ -22,6 +22,7 @@ func run(name string, args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	dbPath := flags.String("db", "", "path to the shared database file")
+	test := flags.Bool("test", false, "use the testing database")
 	flags.Usage = func() {
 		fmt.Fprintf(stderr, "Usage of %s:\n", name)
 		flags.PrintDefaults()
@@ -42,6 +43,12 @@ func run(name string, args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	}
 	if err != nil {
 		return err
+	}
+	if *test {
+		path, err = todo.TestPathFor(path)
+		if err != nil {
+			return err
+		}
 	}
 	exported, err := tui.Run(path)
 	if err != nil {

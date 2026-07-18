@@ -225,3 +225,24 @@ func TestLoadMalformedDatabase(t *testing.T) {
 		t.Fatalf("Load error = %v, want path-aware malformed JSON error", err)
 	}
 }
+
+func TestTestPathUsesSeparateFileBesideDefaultPath(t *testing.T) {
+	defaultPath := filepath.Join(t.TempDir(), "tasks.json")
+	t.Setenv(DatabasePathEnv, defaultPath)
+
+	resolvedPath, err := DefaultPath()
+	if err != nil {
+		t.Fatalf("DefaultPath returned error: %v", err)
+	}
+	testPath, err := TestPath()
+	if err != nil {
+		t.Fatalf("TestPath returned error: %v", err)
+	}
+
+	if got, want := testPath, filepath.Join(filepath.Dir(resolvedPath), "tasks-test.json"); got != want {
+		t.Fatalf("TestPath = %q, want %q", got, want)
+	}
+	if testPath == resolvedPath {
+		t.Fatalf("TestPath = %q, want a path separate from DefaultPath", testPath)
+	}
+}

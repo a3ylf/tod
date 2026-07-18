@@ -31,6 +31,9 @@ func TestRunHelpUsesCommandNameAndSucceeds(t *testing.T) {
 	if got := stderr.String(); !strings.Contains(got, "TODOS_DB_PATH") {
 		t.Fatalf("stderr = %q, want TODOS_DB_PATH in help", got)
 	}
+	if got := stderr.String(); !strings.Contains(got, "-test") {
+		t.Fatalf("stderr = %q, want test database flag", got)
+	}
 }
 
 func TestConfigureDatabasePathPersistsNormalizedPath(t *testing.T) {
@@ -63,6 +66,16 @@ func TestConfigureDatabasePathRejectsEmptyEOF(t *testing.T) {
 	_, err := configureDatabasePath(strings.NewReader(""), &stdout)
 	if !errors.Is(err, todo.ErrDatabasePathNotConfigured) && !strings.Contains(err.Error(), "database path is required") {
 		t.Fatalf("configureDatabasePath error = %v, want required path error", err)
+	}
+}
+
+func TestRunRecognizesTestFlag(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err := Run("tod", []string{"--test", "extra"}, &stdout, &stderr)
+	if err == nil || err.Error() != "unknown argument: extra" {
+		t.Fatalf("Run error = %v, want unknown argument after recognized --test flag", err)
 	}
 }
 
