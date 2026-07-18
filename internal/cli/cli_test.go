@@ -2,9 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"todos/internal/todo"
 	"todos/internal/tui"
 )
 
@@ -21,6 +24,45 @@ func TestRunHelpUsesCommandNameAndSucceeds(t *testing.T) {
 	}
 	if got := stderr.String(); !strings.Contains(got, "Usage of tod:") {
 		t.Fatalf("stderr = %q, want usage for tod", got)
+	}
+	if got := stderr.String(); !strings.Contains(got, "-db") {
+		t.Fatalf("stderr = %q, want --db flag in help", got)
+	}
+	if got := stderr.String(); !strings.Contains(got, "TODOS_DB_PATH") {
+		t.Fatalf("stderr = %q, want TODOS_DB_PATH in help", got)
+	}
+}
+
+func TestConfigureDatabasePathPersistsNormalizedPath(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("APPDATA", configHome)
+	databasePath := filepath.Join(t.TempDir(), "shared", "tasks.json")
+	var stdout bytes.Buffer
+	got, err := configureDatabasePath(strings.NewReader("\""+databasePath+"\"\n"), &stdout)
+	if err != nil {
+		t.Fatalf("configureDatabasePath returned error: %v", err)
+	}
+	if got != databasePath {
+		t.Fatalf("configured path = %q, want %q", got, databasePath)
+	}
+	resolved, err := todo.ResolveDatabasePath("")
+	if err != nil {
+		t.Fatalf("ResolveDatabasePath: %v", err)
+	}
+	if resolved != databasePath {
+		t.Fatalf("resolved path = %q, want %q", resolved, databasePath)
+	}
+	if !strings.Contains(stdout.String(), "Saved database configuration") {
+		t.Fatalf("setup output = %q, want save confirmation", stdout.String())
+	}
+}
+
+func TestConfigureDatabasePathRejectsEmptyEOF(t *testing.T) {
+	var stdout bytes.Buffer
+	_, err := configureDatabasePath(strings.NewReader(""), &stdout)
+	if !errors.Is(err, todo.ErrDatabasePathNotConfigured) && !strings.Contains(err.Error(), "database path is required") {
+		t.Fatalf("configureDatabasePath error = %v, want required path error", err)
 	}
 }
 
